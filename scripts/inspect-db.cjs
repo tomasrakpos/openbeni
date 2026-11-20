@@ -1,0 +1,13 @@
+const { DatabaseSync } = require("node:sqlite");
+const path = require("path");
+const fs = require("fs");
+const file = path.join(process.env.USERPROFILE, ".local", "share", "opencode", "opencode.db");
+const db = new DatabaseSync(file, { readOnly: true });
+const r = db.prepare("select data from session_message where id='msg_1e49a50d5001IM3YPHqU7cyDXp'").get();
+const d = JSON.parse(r.data);
+const img = d.files[0];
+console.log("source", img.source, "dataType", typeof img.data, "head", String(img.data).slice(0, 60), "len", String(img.data).length);
+const b64 = String(img.data).replace(/^data:image\/\w+;base64,/, "");
+const buf = Buffer.from(b64, "base64");
+fs.writeFileSync("public/brand/logo-hx-original.png", buf);
+console.log("wrote", buf.length);

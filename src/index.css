@@ -1,0 +1,854 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ------------------------------------------------------------------ */
+/*  Design tokens                                                      */
+/* ------------------------------------------------------------------ */
+:root {
+  --radius: 16px;
+  --font-sans: "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  --background: #f6f7fb;
+  --background-deep: #eef0f8;
+  --surface-1: #ffffff;
+  --surface-2: #f2f4fa;
+  --surface-3: #e9ecf5;
+  --surface-glass: rgba(255, 255, 255, 0.72);
+
+  --foreground: #0b1020;
+  --foreground-soft: #2a3147;
+  --muted-foreground: #5c6478;
+  --faint: #8b92a6;
+
+  --border: rgba(9, 12, 25, 0.1);
+  --border-strong: rgba(9, 12, 25, 0.16);
+  --input: rgba(9, 12, 25, 0.12);
+
+  --primary: #5a45f2;
+  --primary-foreground: #ffffff;
+  --primary-soft: rgba(90, 69, 242, 0.09);
+  --accent: #0e9bab;
+  --accent-foreground: #ffffff;
+  --accent-soft: rgba(14, 155, 171, 0.1);
+
+  --success: #0f9d69;
+  --success-soft: rgba(15, 157, 105, 0.12);
+  --warning: #b26a00;
+  --warning-soft: rgba(178, 106, 0, 0.12);
+  --destructive: #d92d4b;
+  --destructive-soft: rgba(217, 45, 75, 0.1);
+
+  --ring: rgba(90, 69, 242, 0.55);
+  --shadow-color: 222 40% 20%;
+
+  /* Header: a transparent bar painted over the content, plus a progressive
+     blur region that fades messages out as they slide underneath it. */
+  --header-h: calc(54px + env(safe-area-inset-top, 0px));
+  --header-blur-h: 120px;
+  --glow-1: color-mix(in oklab, var(--accent-glow) 16%, transparent);
+  --glow-2: rgba(34, 211, 238, 0.13);
+
+  /* Background flow (WarpGradient). Kept close to --background so text stays readable. */
+  --warp-1: #f6f7fb;
+  --warp-2: #e2ddff;
+  --warp-3: #d3f0f7;
+  --warp-4: #f6f7fb;
+
+  --code-bg: #f4f5fa;
+  --user-bubble: linear-gradient(
+    140deg,
+    color-mix(in oklab, var(--primary) 10%, transparent),
+    color-mix(in oklab, var(--accent) 8%, transparent)
+  );
+
+  /* Glass material (light): soft white wash, edge light-catching rim, inner sheen. */
+  --glass-alpha: 0.62;
+  --glass-wash-top: rgba(255, 255, 255, 0.6);
+  --glass-wash-bottom: rgba(255, 255, 255, 0.28);
+  --glass-edge-1: rgba(255, 255, 255, 0.92);
+  --glass-edge-2: rgba(255, 255, 255, 0.26);
+  --glass-edge-3: rgba(255, 255, 255, 0.78);
+  --glass-inner-top: rgba(255, 255, 255, 0.85);
+  --glass-inner-bottom: rgba(255, 255, 255, 0.28);
+  --glass-inner-glow: rgba(255, 255, 255, 0.32);
+  --glass-drop: 0 8px 24px rgba(20, 28, 60, 0.12);
+  --glass-ghost-red: rgba(255, 60, 90, 0.2);
+  --glass-ghost-blue: rgba(60, 140, 255, 0.24);
+}
+
+.dark {
+  --background: #0a0c12;
+  --background-deep: #07090e;
+  --surface-1: #0f1219;
+  --surface-2: #141824;
+  --surface-3: #1b2030;
+  --surface-glass: rgba(18, 22, 32, 0.66);
+
+  --foreground: #e9edf9;
+  --foreground-soft: #c6cddf;
+  --muted-foreground: #939bb1;
+  --faint: #6b7288;
+
+  --border: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --input: rgba(255, 255, 255, 0.11);
+
+  --primary: #8b7bff;
+  --primary-foreground: #0a0c12;
+  --primary-soft: rgba(139, 123, 255, 0.12);
+  --accent: #2dd4e8;
+  --accent-foreground: #04141a;
+  --accent-soft: rgba(45, 212, 232, 0.11);
+
+  --success: #34d399;
+  --success-soft: rgba(52, 211, 153, 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.12);
+  --destructive: #fb7185;
+  --destructive-soft: rgba(251, 113, 133, 0.12);
+
+  --ring: rgba(139, 123, 255, 0.65);
+  --shadow-color: 240 60% 2%;
+  --glow-1: color-mix(in oklab, var(--accent-glow) 22%, transparent);
+  --glow-2: rgba(34, 211, 238, 0.14);
+
+  /* Background flow (WarpGradient). Kept close to --background so text stays readable. */
+  --warp-1: #0a0c12;
+  --warp-2: #171338;
+  --warp-3: #062b34;
+  --warp-4: #0a0c12;
+
+  --code-bg: #0b0e15;
+  --user-bubble: linear-gradient(
+    140deg,
+    color-mix(in oklab, var(--primary) 14%, transparent),
+    color-mix(in oklab, var(--accent) 8%, transparent)
+  );
+
+  /* Glass material (dark): translucent charcoal, bright top rim, deep drop shadow. */
+  --glass-alpha: 0.72;
+  --glass-wash-top: rgba(255, 255, 255, 0.07);
+  --glass-wash-bottom: rgba(255, 255, 255, 0.02);
+  --glass-edge-1: rgba(255, 255, 255, 0.55);
+  --glass-edge-2: rgba(255, 255, 255, 0.05);
+  --glass-edge-3: rgba(255, 255, 255, 0.35);
+  --glass-inner-top: rgba(255, 255, 255, 0.28);
+  --glass-inner-bottom: rgba(255, 255, 255, 0.06);
+  --glass-inner-glow: rgba(255, 255, 255, 0.04);
+  --glass-drop: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --glass-ghost-red: rgba(255, 60, 90, 0.45);
+  --glass-ghost-blue: rgba(60, 140, 255, 0.5);
+}
+
+/* ---- Accent theme (violet | ember) -----------------------------------------
+   Alternates on every new visit: the choice is made before React renders by
+   /public/accent.js and stored as data-accent on <html>. It is independent of
+   the light/dark switch; all four combinations stay readable. The tint and
+   ring derive from the glow colour, so one value drives hover washes, focus
+   outlines and glows consistently. */
+:root {
+  --accent-from: #9b72ff;
+  --accent-to: #7c4dff;
+  --accent-glow: #7c4dff;
+  --accent-tint: color-mix(in oklab, var(--accent-glow) 14%, transparent);
+  --accent-ring: color-mix(in oklab, var(--accent-glow) 55%, transparent);
+}
+
+:root[data-accent="ember"] {
+  --accent-from: #ffa066;
+  --accent-to: #e0531a;
+  --accent-glow: #e0531a;
+  /* A touch deeper than the suggested #d9521d so white text on primary
+     buttons keeps a readable contrast ratio in the light theme. */
+  --primary: #c94e17;
+  --primary-soft: rgba(201, 78, 23, 0.09);
+  --ring: rgba(201, 78, 23, 0.55);
+}
+
+.dark[data-accent="ember"] {
+  /* Brighter orange on dark glass; dark text on it keeps strong contrast. */
+  --primary: #ff8a4c;
+  --primary-soft: rgba(255, 138, 76, 0.14);
+  --ring: rgba(255, 138, 76, 0.6);
+}
+
+@theme inline {
+  --font-sans: "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-background: var(--background);
+  --color-background-deep: var(--background-deep);
+  --color-foreground: var(--foreground);
+  --color-foreground-soft: var(--foreground-soft);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-card: var(--surface-1);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--surface-1);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--surface-2);
+  --color-secondary-foreground: var(--foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-destructive: var(--destructive);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-glass: var(--surface-glass);
+  --color-code: var(--code-bg);
+
+  --font-sans: "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 26px;
+
+  --shadow-xs: 0 1px 2px hsl(var(--shadow-color) / 0.06);
+  --shadow-sm: 0 2px 8px hsl(var(--shadow-color) / 0.07), 0 1px 2px hsl(var(--shadow-color) / 0.05);
+  --shadow-md: 0 12px 32px -12px hsl(var(--shadow-color) / 0.24), 0 2px 8px hsl(var(--shadow-color) / 0.06);
+  --shadow-lg: 0 28px 64px -24px hsl(var(--shadow-color) / 0.35), 0 6px 18px -8px hsl(var(--shadow-color) / 0.16);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Base                                                               */
+/* ------------------------------------------------------------------ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior: none;
+  }
+  :lang(fa) {
+    font-family: "Pixelify Sans Variable", "Vazirmatn Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 32%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  button,
+  [role="button"] {
+    -webkit-tap-highlight-color: transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--muted-foreground) 26%, transparent);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+    background-clip: content-box;
+  }
+  input[type="search"]::-webkit-search-cancel-button {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Utilities                                                          */
+/* ------------------------------------------------------------------ */
+.cm-surface {
+  --hl: 0;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--surface-2) 82%, transparent),
+      color-mix(in oklab, var(--surface-1) 97%, transparent)
+    ),
+    var(--surface-1);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / calc(0.22 * var(--hl, 0))),
+    0 24px 48px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Glass material                                                     */
+/*  One shared 1px gradient rim + inner sheen + blur. Radius is left   */
+/*  to the element (16px cards, pill buttons, 11-12px fields).         */
+/* ------------------------------------------------------------------ */
+.glass,
+.surface-card,
+.glass-card {
+  position: relative;
+  background:
+    linear-gradient(180deg, var(--glass-wash-top), var(--glass-wash-bottom)),
+    color-mix(in oklab, var(--surface-1) calc(var(--glass-alpha) * 100%), transparent);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 var(--glass-inner-top),
+    inset 0 -1px 0 var(--glass-inner-bottom),
+    inset 0 0 12px var(--glass-inner-glow),
+    var(--glass-drop);
+  border: 0;
+}
+
+.glass::before,
+.surface-card::before,
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    var(--glass-edge-1),
+    var(--glass-edge-2) 40%,
+    var(--glass-edge-2) 60%,
+    var(--glass-edge-3)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Cards keep a 16px radius, buttons/fields opt into pill or their own radius. */
+.surface-card,
+.glass-card {
+  border-radius: var(--radius-lg);
+}
+
+.glass-pill {
+  border-radius: 9999px;
+}
+
+/* Whisper-thin chromatic fringe for text sitting on glass. */
+.glass-text {
+  text-shadow:
+    -0.6px 0 var(--glass-ghost-red),
+    0.6px 0 var(--glass-ghost-blue);
+}
+
+@utility hairline {
+  border: 1px solid var(--border);
+}
+
+@utility text-gradient {
+  background: linear-gradient(100deg, var(--primary), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility accent-gradient {
+  background: linear-gradient(120deg, var(--primary), color-mix(in oklab, var(--accent) 85%, var(--primary)));
+}
+
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Ambient background                                                 */
+/* ------------------------------------------------------------------ */
+.app-ambient::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(60rem 40rem at 12% -10%, var(--glow-1), transparent 60%),
+    radial-gradient(48rem 34rem at 92% 8%, var(--glow-2), transparent 62%),
+    radial-gradient(50rem 40rem at 50% 110%, color-mix(in oklab, var(--primary) 10%, transparent), transparent 65%);
+  filter: saturate(120%);
+  animation: ambient-drift 26s ease-in-out infinite alternate;
+}
+
+@keyframes ambient-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(1.2%, 0.8%, 0) scale(1.04);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-1%, -0.6%, 0) scale(1.02);
+    opacity: 0.9;
+  }
+}
+
+.app-grid::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(to right, var(--border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 20%, transparent 78%);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Animations                                                         */
+/* ------------------------------------------------------------------ */
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--foreground) 8%, transparent), transparent);
+  animation: shimmer 1.6s infinite;
+}
+
+@keyframes caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0.12;
+  }
+}
+.stream-caret {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: -0.16em;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--primary), var(--accent));
+  animation: caret-blink 1.05s steps(1, end) infinite;
+}
+
+.text-shimmer {
+  --ts-band: rgba(176, 124, 255, 0.95);
+  --ts-w: 60%;
+  --ts-x: -100%;
+  display: inline-block;
+  white-space: nowrap;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image:
+    linear-gradient(90deg, transparent 0%, var(--ts-band) 32%, var(--foreground) 62%, var(--foreground) 72%, transparent 100%),
+    linear-gradient(var(--muted-foreground), var(--muted-foreground));
+  background-repeat: no-repeat;
+  background-size: var(--ts-w) 100%, 100% 100%;
+  background-position: var(--ts-x) 0, 0 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer {
+    --ts-w: 100%;
+    --ts-x: 0%;
+    --ts-band: var(--foreground);
+  }
+}
+
+@keyframes ping-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--success) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.status-live {
+  animation: ping-pulse 2.4s infinite;
+}
+
+.shiki,
+.shiki span {
+  background: transparent !important;
+}
+.shiki {
+  padding: 0 !important;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Markdown                                                           */
+/* ------------------------------------------------------------------ */
+.prose-chat {
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  color: var(--foreground-soft);
+  word-break: break-word;
+}
+.prose-chat > *:first-child {
+  margin-top: 0;
+}
+.prose-chat > *:last-child {
+  margin-bottom: 0;
+}
+.prose-chat p {
+  margin: 0.7em 0;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3,
+.prose-chat h4 {
+  color: var(--foreground);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 1.4em 0 0.55em;
+  line-height: 1.3;
+}
+.prose-chat h1 {
+  font-size: 1.4em;
+}
+.prose-chat h2 {
+  font-size: 1.22em;
+}
+.prose-chat h3 {
+  font-size: 1.08em;
+}
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0.7em 0;
+  padding-inline-start: 1.35em;
+}
+.prose-chat ul {
+  list-style: disc;
+}
+.prose-chat ol {
+  list-style: decimal;
+}
+.prose-chat li {
+  margin: 0.28em 0;
+}
+.prose-chat li::marker {
+  color: var(--faint);
+}
+.prose-chat a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in oklab, var(--accent) 40%, transparent);
+}
+.prose-chat a:hover {
+  text-decoration-color: var(--accent);
+}
+.prose-chat blockquote {
+  margin: 1em 0;
+  padding-inline-start: 1em;
+  border-inline-start: 2px solid color-mix(in oklab, var(--primary) 55%, transparent);
+  color: var(--muted-foreground);
+}
+.prose-chat hr {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.prose-chat table {
+  width: 100%;
+  margin: 1em 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875em;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.prose-chat th,
+.prose-chat td {
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+}
+.prose-chat th {
+  background: var(--surface-2);
+  font-weight: 600;
+  color: var(--foreground);
+}
+.prose-chat tr:last-child td {
+  border-bottom: 0;
+}
+.prose-chat code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.14em 0.38em;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+.prose-chat :where(pre) {
+  margin: 0;
+}
+.prose-chat img {
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+.prose-chat .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.35em 0;
+}
+
+/* reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* mobile safe areas */
+.safe-bottom {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+.safe-top {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Header progressive blur                                            */
+/*                                                                     */
+/*  A pinned, click-through layer painted between the scrolling chat    */
+/*  and the transparent header. Six stacked backdrop-filter layers each */
+/*  cover a shorter band (stronger blur = shorter), so content gets     */
+/*  blurrier and more color-faded the closer it slides to the top edge. */
+/*  The header sits above it, so the controls never get blurred.        */
+/* ------------------------------------------------------------------ */
+.header-blur {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 5;
+  height: calc(var(--header-blur-h) + env(safe-area-inset-top, 0px));
+  pointer-events: none;
+}
+
+.header-blur > i {
+  position: absolute;
+  inset: 0;
+  -webkit-backdrop-filter: blur(var(--blur));
+  backdrop-filter: blur(var(--blur));
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 calc(var(--edge) - 22%),
+    transparent var(--edge)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 calc(var(--edge) - 22%),
+    transparent var(--edge)
+  );
+}
+
+/* Color fade into the page background, so text under the header is unreadable
+   even when blur is unavailable. */
+.header-blur::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklab, var(--background) 88%, transparent) 0%,
+    color-mix(in oklab, var(--background) 5%, transparent) 45%,
+    transparent 100%
+  );
+}
+
+/* No backdrop-filter support: keep only the color fade. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .header-blur > i {
+    display: none;
+  }
+}
+
+/* Phones: four layers are enough to read as a smooth fade and cost less per
+   frame on weaker GPUs. */
+@media (max-width: 639px) {
+  .header-blur > i:nth-child(-n + 2) {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Pixel mascot                                                       */
+/*                                                                     */
+/*  Palette and size are variables: override --pix-main (or the whole   */
+/*  palette) to recolor it, and set width/left/bottom to move it.      */
+/* ------------------------------------------------------------------ */
+.pix-mascot {
+  --pix-main: var(--primary);
+  --pix-light: color-mix(in oklab, var(--pix-main) 42%, white);
+  --pix-dark: color-mix(in oklab, var(--pix-main) 62%, #170b30);
+  --pix-eye: color-mix(in oklab, var(--pix-main) 12%, #120a24);
+  --pix-foot: color-mix(in oklab, var(--pix-main) 38%, #1c0e3a);
+  position: absolute;
+  left: 26px;
+  bottom: calc(100% - 6px);
+  width: 48px;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 0.5s, transform 0.7s, filter 0.5s;
+  filter: drop-shadow(0 0 14px color-mix(in oklab, var(--pix-main) 55%, transparent));
+}
+.pix-mascot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  shape-rendering: crispEdges;
+  animation: pix-bob 1s steps(10) infinite alternate;
+}
+@keyframes pix-bob {
+  to {
+    transform: translateY(-4px);
+  }
+}
+.pix-mascot b {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--pix-light);
+  opacity: 0;
+  animation: pix-spark 4s steps(4) infinite;
+}
+.pix-mascot b:nth-of-type(1) {
+  left: -10px;
+  top: 6px;
+}
+.pix-mascot b:nth-of-type(2) {
+  right: -8px;
+  top: -8px;
+  animation-delay: -1s;
+  background: color-mix(in oklab, var(--accent) 42%, white);
+}
+.pix-mascot b:nth-of-type(3) {
+  right: -14px;
+  top: 30px;
+  animation-delay: -2s;
+}
+@keyframes pix-spark {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+.pix-L {
+  fill: var(--pix-light);
+}
+.pix-P {
+  fill: var(--pix-main);
+}
+.pix-D {
+  fill: var(--pix-dark);
+}
+.pix-E {
+  fill: var(--pix-eye);
+}
+.pix-F {
+  fill: var(--pix-foot);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Empty state → conversation dock transition                         */
+/* ------------------------------------------------------------------ */
+.chat-dock-hero {
+  transition:
+    opacity 0.6s ease,
+    transform 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 0.6s ease;
+}
+.chat-docking .chat-dock-hero {
+  opacity: 0;
+  transform: translateY(-14px);
+  filter: blur(8px);
+  pointer-events: none;
+}
+.chat-dock-composer {
+  transition:
+    top 1s cubic-bezier(0.65, 0, 0.2, 1),
+    left 1s cubic-bezier(0.65, 0, 0.2, 1),
+    width 1s cubic-bezier(0.65, 0, 0.2, 1);
+}
+.chat-docking .pix-mascot {
+  opacity: 0;
+  transform: translateY(-14px);
+  filter: blur(8px) drop-shadow(0 0 14px transparent);
+  transition-delay: 0.25s;
+}

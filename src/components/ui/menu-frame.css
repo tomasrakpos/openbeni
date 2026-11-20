@@ -1,0 +1,31 @@
+/*
+ * Shared card frame.
+ *
+ * Copied 1:1 from `.ohc-card` in corner-menu.css (border, gradient, shadow)
+ * plus the 20px radius the corner menu applies inline. It lives in the
+ * `components` layer so callers can still override layout utilities
+ * (`p-0`, `overflow-y-auto`, width) without editing the frame itself.
+ *
+ * The layer order is declared here as well: this stylesheet can load before
+ * Tailwind's entry, and without this statement `components` would be
+ * registered ahead of `base`, letting the preflight border reset win.
+ */
+@layer theme, base, components, utilities;
+
+@layer components {
+  .menu-frame {
+    border: 1px solid var(--border-strong);
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklab, var(--foreground) 6%, transparent),
+        color-mix(in oklab, var(--foreground) 1.5%, transparent)
+      ),
+      var(--surface-1);
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklab, var(--glass-inner-top) calc(var(--hl, 0) * 100%), transparent),
+      0 24px 48px color-mix(in oklab, hsl(var(--shadow-color)) 55%, transparent);
+    border-radius: 20px;
+    overflow: hidden;
+  }
+}

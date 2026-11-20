@@ -1,0 +1,18 @@
+{
+  "name": "OpenHarneks",
+  "short_name": "OpenHarneks",
+  "description": "A local-first, provider-agnostic AI chat workspace. Your models, your keys, your browser.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0c12",
+  "theme_color": "#0b0716",
+  "icons": [
+    {
+      "src": "/brand/openharness-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

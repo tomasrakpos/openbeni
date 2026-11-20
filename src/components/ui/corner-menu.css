@@ -1,0 +1,244 @@
+/* ------------------------------------------------------------------ */
+/*  CornerMenu                                                         */
+/*  Geometry (left/top/width/height/radius/scale/blur/opacity) is       */
+/*  written from the reference frames in corner-menu.tsx; this file     */
+/*  only carries the material, the row look and the icon glow.          */
+/*  The whole surface is LTR on purpose, even when the app is Persian.   */
+/* ------------------------------------------------------------------ */
+
+.ohc-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  background: hsl(var(--shadow-color));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ohc-fab {
+  position: fixed;
+  z-index: 70;
+  top: calc(env(safe-area-inset-top, 0px) + var(--ohc-inset, 16px));
+  left: calc(env(safe-area-inset-left, 0px) + var(--ohc-inset, 16px));
+  width: 48px;
+  height: 48px;
+  direction: ltr;
+  text-align: left;
+  font-family: var(--font-sans);
+}
+
+/* Mounted inside the app shell: the trigger follows its own container instead
+   of the viewport, so it clears the sidebar and the header. */
+.ohc-fab[data-position="inline"] {
+  position: absolute;
+  top: var(--ohc-inset, 16px);
+  left: var(--ohc-inset, 16px);
+}
+
+.ohc-hint {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 4px;
+}
+
+/* The frame table drives both alphas (--ohc-tbg / --ohc-tborder); the colour
+   itself comes from the theme token, so light and dark both read correctly. */
+.ohc-trigger {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in oklab, var(--foreground) calc(var(--ohc-tborder, 0.1) * 100%), transparent);
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--foreground) calc(var(--ohc-tbg, 0.05) * 100%), transparent);
+  color: var(--foreground);
+  cursor: pointer;
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+
+.ohc-icon {
+  display: grid;
+  place-items: center;
+  color: currentColor;
+  will-change: opacity, filter, transform;
+}
+
+.ohc-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.ohc-card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border: 1px solid var(--border-strong);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--foreground) 6%, transparent),
+      color-mix(in oklab, var(--foreground) 1.5%, transparent)
+    ),
+    var(--surface-1);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, var(--glass-inner-top) calc(var(--hl, 0) * 100%), transparent),
+    0 24px 48px color-mix(in oklab, hsl(var(--shadow-color)) 55%, transparent);
+  will-change: left, top, width, height, border-radius, opacity;
+}
+
+.ohc-content {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  direction: ltr;
+  text-align: left;
+  transform-origin: center center;
+  will-change: transform, opacity, filter;
+}
+
+.ohc-content::-webkit-scrollbar {
+  display: none;
+}
+
+.ohc-heading {
+  margin: 0 0 8px;
+  padding: 0 10px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ohc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ohc-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--foreground);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  font: inherit;
+  transition: background 0.15s;
+}
+
+.ohc-item:hover {
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+.ohc-item:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.ohc-item[aria-current="true"] {
+  background: color-mix(in oklab, var(--foreground) 9%, transparent);
+}
+
+.ohc-item[aria-disabled="true"] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.ohc-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Persian text keeps its own direction, but the row stays left-aligned. */
+.ohc-label[dir="rtl"] {
+  text-align: left;
+}
+
+/* Plain by default, coloured + glowing only on hover / focus / press. */
+.ohc-chip {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.ohc-chip svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: var(--muted-foreground);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.2s;
+}
+
+.ohc-item:hover .ohc-chip,
+.ohc-item:focus-visible .ohc-chip,
+.ohc-item:active .ohc-chip {
+  background: linear-gradient(
+    145deg,
+    var(--primary),
+    color-mix(in oklab, var(--primary) 70%, var(--background))
+  );
+  box-shadow:
+    0 0 14px color-mix(in oklab, var(--primary) 50%, transparent),
+    inset 0 1px 0 color-mix(in oklab, var(--primary-foreground) 40%, transparent);
+}
+
+.ohc-item[data-tint="accent"]:hover .ohc-chip,
+.ohc-item[data-tint="accent"]:focus-visible .ohc-chip,
+.ohc-item[data-tint="accent"]:active .ohc-chip {
+  background: linear-gradient(
+    145deg,
+    var(--accent),
+    color-mix(in oklab, var(--accent) 70%, var(--background))
+  );
+  box-shadow:
+    0 0 14px color-mix(in oklab, var(--accent) 50%, transparent),
+    inset 0 1px 0 color-mix(in oklab, var(--accent-foreground) 40%, transparent);
+}
+
+.ohc-item:hover .ohc-chip svg,
+.ohc-item:focus-visible .ohc-chip svg,
+.ohc-item:active .ohc-chip svg {
+  stroke: var(--primary-foreground);
+}
+
+.ohc-item[data-tint="accent"]:hover .ohc-chip svg,
+.ohc-item[data-tint="accent"]:focus-visible .ohc-chip svg,
+.ohc-item[data-tint="accent"]:active .ohc-chip svg {
+  stroke: var(--accent-foreground);
+}

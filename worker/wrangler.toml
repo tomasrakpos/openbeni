@@ -1,0 +1,12 @@
+name = "apiset-pro"
+main = "./proxy.ts"
+compatibility_date = "2026-01-01"
+
+# Keep the worker public but locked down through ALLOWED_HOSTS.
+workers_dev = true
+
+# Recommended production settings (uncomment and edit):
+# [vars]
+# ALLOWED_HOSTS = "api.openai.com,api.anthropic.com,generativelanguage.googleapis.com,openrouter.ai"
+# ALLOWED_ORIGIN = "https://your-project.pages.dev"
+# PROXY_TOKEN = "change-me"

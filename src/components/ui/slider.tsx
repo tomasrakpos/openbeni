@@ -1,0 +1,23 @@
+// Reusable UI primitive slider; adjust its default appearance and behavior here.
+import * as SliderPrimitive from "@radix-ui/react-slider";
+import * as React from "react";
+import { cn } from "@/lib/utils";
+
+const Slider = React.forwardRef<
+  React.ElementRef<typeof SliderPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof SliderPrimitive.Root>
+>(({ className, ...props }, ref) => (
+  <SliderPrimitive.Root
+    ref={ref}
+    className={cn("relative flex w-full touch-none select-none items-center py-2", className)}
+    {...props}
+  >
+    <SliderPrimitive.Track className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-[var(--surface-3)]">
+      <SliderPrimitive.Range className="absolute h-full accent-gradient" />
+    </SliderPrimitive.Track>
+    <SliderPrimitive.Thumb className="block size-4 rounded-full border-2 border-[var(--primary)] bg-[var(--surface-1)] shadow-sm transition-transform hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] disabled:pointer-events-none disabled:opacity-50" />
+  </SliderPrimitive.Root>
+));
+Slider.displayName = "Slider";
+
+export { Slider };
