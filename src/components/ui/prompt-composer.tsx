@@ -1,10 +1,12 @@
 // Reusable UI primitive prompt-composer; adjust its default appearance and behavior here.
 import * as React from "react";
 import { gsap } from "gsap";
-import { ArrowUp, Loader2, Paperclip } from "lucide-react";
-import { LiquidGlassPanel } from "@/components/ui/liquid-glass-panel";
+import { ArrowUp, ChevronDown, Coins, Cpu, Loader2, Paperclip, Route } from "lucide-react";
+import { LiquidGlass } from "@/components/ui/apple-tahoe-liquid-glass-button";
+import { GlassButton } from "@/components/ui/glass-button";
 import { MorphMenu, type MorphMenuItem } from "@/components/ui/morph-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { Tier } from "@/lib/types";
 
 /*
  * Prompt Composer: the liquid-glass prompt box of an AI app builder. The
@@ -43,11 +45,21 @@ export type ComposerPlatform = {
 };
 
 export type PromptComposerModel = {
-  /** Stable row id of the model. */
+  /** Stable row id of the model or router (`router::...`). */
   id: string;
   label: string;
   /** Secondary line in the menu, e.g. the provider name. */
   note?: string;
+  /** Detected Free / Paid / Unknown tier of this model. */
+  tier?: Tier;
+  /** True when the model belongs to a user-added (BYOK) provider. */
+  userAdded?: boolean;
+  /** True when this option represents a Free Model Router. */
+  isRouter?: boolean;
+  /** Number of currently active free models behind this router. */
+  routerActiveCount?: number;
+  /** True when the option cannot be selected (e.g. router with 0 active models). */
+  disabled?: boolean;
 };
 
 export type PromptComposerAttachment = {
@@ -299,7 +311,7 @@ function PixelIcon({ name }: { name: string }) {
 
 export default function PromptComposer({
   prompts = DEFAULT_PROMPTS,
-  placeholder = "Describe what you want to explore...",
+  placeholder = "Ask anything...",
   platforms = DEFAULT_PLATFORMS,
   showPlatforms = false,
   models = [],
@@ -558,27 +570,118 @@ export default function PromptComposer({
     "--ppc-ink": tone.ink,
   } as React.CSSProperties;
 
-  const modelItems: MorphMenuItem[] = models.map((m, i) => ({
-    id: m.id,
-    label: m.label,
-    meta: note(i),
-    checked: selectedIndex === i,
-    onSelect: () => chooseModel(i),
-  }));
+  const fa = typeof document !== "undefined" && document.documentElement.lang.startsWith("fa");
+  const freeLabel = fa ? "رایگان" : "Free";
+  const paidLabel = fa ? "پولی" : "Paid";
+  const routerLabel = fa ? "روتر" : "Router";
+
+  const chooseModelRef = React.useRef(chooseModel);
+  chooseModelRef.current = chooseModel;
+
+  const modelItems = React.useMemo<MorphMenuItem[]>(() => {
+    const routersCount = models.filter((m) => m.isRouter).length;
+    const freeModelsCount = models.filter((m) => !m.isRouter && m.tier === "free").length;
+    const paidModelsCount = models.filter((m) => !m.isRouter && m.tier === "paid").length;
+    const showTierSections =
+      routersCount > 0 || (paidModelsCount > 0 && (freeModelsCount > 0 || models.some((m) => m.userAdded)));
+
+    let firstRouterSeen = false;
+    let firstFreeSeen = false;
+    let firstPaidSeen = false;
+    return models.map((m, i) => {
+      const providerNote = (modelNotes && modelNotes[i]) ?? m.note ?? "";
+      let sectionHeader: React.ReactNode = undefined;
+      if (showTierSections) {
+        if (m.isRouter && !firstRouterSeen) {
+          firstRouterSeen = true;
+          sectionHeader = (
+            <span className="inline-flex items-center gap-1.5 text-[var(--primary)]">
+              <Route className="size-3" aria-hidden="true" />
+              {fa ? `روترها (${routersCount})` : `Routers (${routersCount})`}
+            </span>
+          );
+        } else if (!m.isRouter && m.tier === "free" && !firstFreeSeen) {
+          firstFreeSeen = true;
+          sectionHeader = (
+            <span className="inline-flex items-center gap-1.5 text-[var(--success)]">
+              <span className="size-1.5 rounded-full bg-[var(--success)]" />
+              {fa ? `مدل‌های رایگان (${freeModelsCount})` : `Free models (${freeModelsCount})`}
+            </span>
+          );
+        } else if (!m.isRouter && m.tier === "paid" && !firstPaidSeen) {
+          firstPaidSeen = true;
+          sectionHeader = (
+            <span className="inline-flex items-center gap-1.5 text-[var(--warning)]">
+              <Coins className="size-3" aria-hidden="true" />
+              {fa ? `مدل‌های پولی (${paidModelsCount})` : `Paid models (${paidModelsCount})`}
+            </span>
+          );
+        }
+      }
+
+      const showUserBadge = !m.isRouter && m.userAdded && (m.tier === "free" || m.tier === "paid");
+      const metaNode: React.ReactNode = m.isRouter ? (
+        <span className="inline-flex items-center gap-1.5">
+          {providerNote ? <span className="truncate opacity-80">{providerNote}</span> : null}
+          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-[color-mix(in_oklab,var(--primary)_40%,transparent)] bg-[var(--primary-soft)] px-1.5 py-[1px] text-[9.5px] font-semibold leading-tight text-[var(--primary)]">
+            <Route className="size-2.5" aria-hidden="true" />
+            {routerLabel}
+          </span>
+        </span>
+      ) : showUserBadge ? (
+        <span className="inline-flex items-center gap-1.5">
+          {providerNote ? <span className="truncate opacity-80">{providerNote}</span> : null}
+          {m.tier === "free" ? (
+            <span className="inline-flex shrink-0 items-center rounded-full border border-[color-mix(in_oklab,var(--success)_38%,transparent)] bg-[var(--success-soft)] px-1.5 py-[1px] text-[9.5px] font-semibold leading-tight text-[var(--success)]">
+              {freeLabel}
+            </span>
+          ) : (
+            <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-[color-mix(in_oklab,var(--warning)_40%,transparent)] bg-[var(--warning-soft)] px-1.5 py-[1px] text-[9.5px] font-semibold leading-tight text-[var(--warning)]">
+              <Coins className="size-2.5" aria-hidden="true" />
+              {paidLabel}
+            </span>
+          )}
+        </span>
+      ) : (
+        providerNote
+      );
+
+      return {
+        id: m.id,
+        label: m.label,
+        icon: m.isRouter ? <Route className="size-3.5 text-[var(--primary)]" aria-hidden="true" /> : undefined,
+        meta: metaNode,
+        sectionHeader,
+        checked: selectedIndex === i,
+        disabled: m.disabled,
+        onSelect: () => {
+          if (!m.disabled) chooseModelRef.current(i);
+        },
+      };
+    });
+  }, [models, modelNotes, selectedIndex, fa, freeLabel, paidLabel, routerLabel]);
 
   return (
     <div className={"ppc-root" + (className ? " " + className : "")} style={style}>
       <style>{PPC_CSS}</style>
       <div className="ppc-stage">
-        <LiquidGlassPanel
-          className="ppc-glass"
+        <LiquidGlass
+          className="ppc-glass absolute inset-0 z-0 pointer-events-none rounded-[22px]"
+          style={{ borderRadius: 22 }}
           aria-hidden="true"
+          material="clear"
           appearance={dark ? "dark" : "light"}
+          refraction={32}
           bezel={32}
-          blur={3}
-          brightness={dark ? 1.18 : 1}
-          saturation={1.2}
-          fallbackBlur={18}
+          blur={2}
+          saturation={1.4}
+          brightness={1.05}
+          dispersion={0}
+          fallbackBlur={10}
+          mode="auto"
+          interactive={false}
+          motion="full"
+          fluid={false}
         />
         <form
           ref={cardRef}
@@ -590,7 +693,12 @@ export default function PromptComposer({
         >
         {phase === "idle" && (
           <>
-            <div className="ppc-field ppc-enter">
+            <div
+              className="ppc-field ppc-enter"
+              onClick={() => {
+                if (!disabled) inputRef.current?.focus();
+              }}
+            >
               <label htmlFor={ids.input} className="ppc-sr">
                 {labels?.input ?? "Describe what you want to explore"}
               </label>
@@ -642,19 +750,18 @@ export default function PromptComposer({
 
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="ppc-action"
+                    <GlassButton
+                      variant="icon"
                       aria-label={labels?.attach ?? "Attach files"}
                       aria-busy={attachPending || undefined}
                       onClick={() => fileRef.current?.click()}
                     >
                       {attachPending ? (
-                        <Loader2 className="ppc-spin" aria-hidden="true" />
+                        <Loader2 size={14} strokeWidth={1.75} className="ppc-spin" aria-hidden="true" />
                       ) : (
-                        <Paperclip strokeWidth={1.75} aria-hidden="true" />
+                        <Paperclip size={14} strokeWidth={1.75} aria-hidden="true" />
                       )}
-                    </button>
+                    </GlassButton>
                   </TooltipTrigger>
                   <TooltipContent>{labels?.attach ?? "Attach files"}</TooltipContent>
                 </Tooltip>
@@ -668,7 +775,12 @@ export default function PromptComposer({
                   onChange={handleFiles}
                 />
 
-                {trailingActions}
+                {trailingActions ? (
+                  <>
+                    <span className="ppc-sep" aria-hidden="true" />
+                    {trailingActions}
+                  </>
+                ) : null}
 
                 {showPlatforms && (
                   <div className="ppc-chips" role="radiogroup" aria-label={labels?.platforms ?? "What are you building?"}>
@@ -698,28 +810,33 @@ export default function PromptComposer({
                     items={modelItems}
                     label={labels?.model ?? "Model"}
                     align="end"
-                    width={300}
+                    width={316}
                     trigger={(props) => (
-                      <button
+                      <GlassButton
                         {...props}
-                        type="button"
-                        className="ppc-model"
+                        variant="pill"
+                        wrapClassName="ppc-model"
                         aria-label={labels?.model ?? "Model"}
                         disabled={models.length === 0}
                       >
-                        <PixelIcon name="bolt" />
-                        <span dir="auto">{selectedModel?.label ?? "—"}</span>
-                        <svg className="ppc-chev" viewBox="0 0 10 6" aria-hidden="true">
-                          <path
-                            d="M1 1l4 4 4-4"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      </button>
+                        {selectedModel?.isRouter ? (
+                          <Route size={14} strokeWidth={1.75} className="ppc-pill-ic" aria-hidden="true" />
+                        ) : (
+                          <Cpu size={14} strokeWidth={1.75} className="ppc-pill-ic" aria-hidden="true" />
+                        )}
+                        <span className="ppc-model-name" dir="auto">{selectedModel?.label ?? "—"}</span>
+                        {selectedModel?.isRouter ? (
+                          <span className="inline-flex shrink-0 items-center rounded-full border border-[color-mix(in_oklab,var(--primary)_40%,transparent)] bg-[var(--primary-soft)] px-1.5 py-[1px] text-[9px] font-semibold leading-tight text-[var(--primary)]">
+                            {routerLabel}
+                          </span>
+                        ) : selectedModel?.userAdded && selectedModel.tier === "paid" ? (
+                          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-[color-mix(in_oklab,var(--warning)_40%,transparent)] bg-[var(--warning-soft)] px-1.5 py-[1px] text-[9px] font-semibold leading-tight text-[var(--warning)]">
+                            <Coins className="size-2.5" aria-hidden="true" />
+                            {paidLabel}
+                          </span>
+                        ) : null}
+                        <ChevronDown size={12} strokeWidth={1.8} className="ppc-chev" aria-hidden="true" />
+                      </GlassButton>
                     )}
                   />
                 </div>
@@ -882,14 +999,14 @@ const PPC_CSS = `
  */
 .ppc-glass{
   position:absolute;inset:0;z-index:0;pointer-events:none;
-  border-radius:20px;
+  border-radius:22px;
 }
 .ppc-card{
   position:relative;
   z-index:1;
   width:100%;
-  border-radius:20px;
-  padding:8px 10px;
+  border-radius:22px;
+  padding:15px 14px 12px;
   background:transparent;
   box-shadow:none;
   transition:box-shadow .35s ease;
@@ -906,16 +1023,16 @@ const PPC_CSS = `
 }
 .ppc-card[data-nudge="true"]{animation:ppc-nudge .45s cubic-bezier(.36,.07,.19,.97)}
 @keyframes ppc-nudge{20%{transform:translateX(-7px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(2px)}}
-.ppc-field{position:relative;padding:2px 2px 0}
+.ppc-field{position:relative;padding:2px 4px 12px;cursor:text}
 .ppc-input{
-  display:block;width:100%;min-height:24px;max-height:200px;resize:none;border:0;outline:0;background:transparent;
-  color:var(--ppc-fg);font:inherit;font-size:15px;line-height:1.5;letter-spacing:.005em;padding:0 2px;
+  display:block;width:100%;min-height:46px;max-height:220px;resize:none;border:0;outline:0;background:transparent;
+  color:var(--ppc-fg);font:inherit;font-size:15px;line-height:1.55;letter-spacing:.005em;padding:0 2px;
   overflow-y:hidden;scrollbar-width:thin;
 }
 .ppc-input:disabled{opacity:.55}
 .ppc-root .ppc-input:focus-visible{outline:none}
 .ppc-ph{
-  position:absolute;left:2px;right:2px;top:2px;font-size:15px;line-height:24px;color:var(--ppc-faint);pointer-events:none;
+  position:absolute;left:6px;right:6px;top:2px;font-size:15px;line-height:1.55;color:var(--ppc-faint);pointer-events:none;
   overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
 }
 .ppc-caret{
@@ -924,7 +1041,7 @@ const PPC_CSS = `
 }
 @keyframes ppc-blink{50%{opacity:0}}
 
-.ppc-files{display:flex;flex-wrap:wrap;gap:6px;margin:6px 2px 0}
+.ppc-files{display:flex;flex-wrap:wrap;gap:6px;margin:0 2px 10px}
 .ppc-file{
   display:inline-flex;align-items:center;gap:6px;height:28px;padding-inline:9px 6px;border-radius:9px;font-size:12px;
   color:var(--ppc-mute);background:var(--ppc-surface);box-shadow:inset 0 0 0 1px var(--ppc-line);max-width:220px;
@@ -937,11 +1054,12 @@ const PPC_CSS = `
 }
 .ppc-file button:hover{background:var(--ppc-hover);color:var(--ppc-fg)}
 
-.ppc-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}
-.ppc-left{display:flex;align-items:center;gap:6px;min-width:0;flex:0 1 auto}
+.ppc-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px;padding-top:4px}
+.ppc-left{display:flex;align-items:center;gap:7px;min-width:0;flex:0 1 auto}
+.ppc-sep{width:1px;height:18px;flex:none;margin-inline:2px;background:color-mix(in oklab,var(--foreground) 12%,transparent);border-radius:1px}
 .ppc-chips{display:flex;flex-wrap:wrap;gap:6px;margin-inline-start:2px}
 .ppc-chip{
-  display:inline-flex;align-items:center;gap:7px;height:32px;padding-inline:9px 11px;border-radius:10px;font-size:12.5px;font-weight:500;
+  display:inline-flex;align-items:center;gap:7px;height:34px;padding-inline:10px 12px;border-radius:11px;font-size:12.5px;font-weight:500;
   color:var(--ppc-mute);background:var(--ppc-surface);box-shadow:inset 0 0 0 1px var(--ppc-line);
   transition:color .2s,background .2s,box-shadow .2s,transform .2s;
 }
@@ -951,28 +1069,59 @@ const PPC_CSS = `
 .ppc-chip[aria-checked="true"] .ppc-icon{fill:var(--ppc-a2)}
 .ppc-chip:active{transform:scale(.96)}
 
-.ppc-right{display:flex;align-items:center;gap:6px;flex:none;margin-inline-start:auto;min-width:0}
-.ppc-model-wrap{position:relative;min-width:0}
-.ppc-model{
-  display:inline-flex;align-items:center;gap:6px;height:30px;padding-inline:9px;border-radius:9px;font-size:12.5px;
-  color:var(--ppc-mute);transition:background .15s,color .15s;max-width:clamp(96px,30vw,190px);min-width:0;flex:0 1 auto;
-}
-.ppc-model span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ppc-model:hover,.ppc-model[aria-expanded="true"]{background:color-mix(in oklab,var(--foreground) 8%,transparent);color:var(--ppc-fg)}
-.ppc-model .ppc-icon{width:10px;height:10px;fill:var(--ppc-a2);flex:none}
-.ppc-chev{width:9px;height:6px;flex:none;transition:transform .3s}
-.ppc-model[aria-expanded="true"] .ppc-chev{transform:rotate(180deg)}
+.ppc-right{display:flex;align-items:center;gap:7px;flex:none;margin-inline-start:auto;min-width:0}
+.ppc-model-wrap{display:inline-flex;align-items:center;position:relative;min-width:0}
 
+/* Unified toolbar control language: identical 34px height, 11px radius, 16px icons, subtle glass pill fill & shared ink */
 .ppc-action{
-  width:32px;height:32px;border-radius:10px;display:grid;place-items:center;flex:none;
-  color:color-mix(in oklab,var(--foreground) 55%,transparent);
-  transition:background .15s ease,color .15s ease,transform .15s ease;
+  position:relative;width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:none;
+  color:color-mix(in oklab,var(--foreground) 72%,transparent);
+  background:color-mix(in oklab,var(--foreground) 5%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--foreground) 8%,transparent);
+  transition:background .15s ease,color .15s ease,box-shadow .15s ease,transform .15s ease;
 }
-.ppc-action svg{width:18px;height:18px;stroke:currentColor;fill:none}
-.ppc-action:hover{background:color-mix(in oklab,var(--foreground) 10%,transparent);color:color-mix(in oklab,var(--foreground) 90%,transparent)}
-.ppc-action:active{transform:scale(.94)}
+.ppc-action svg{width:16px;height:16px;stroke:currentColor;fill:none}
+.ppc-action:hover{
+  background:color-mix(in oklab,var(--foreground) 10%,transparent);
+  color:var(--ppc-fg);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--foreground) 14%,transparent);
+}
+.ppc-action:active{transform:scale(.95)}
 .ppc-action:disabled{opacity:.4;cursor:not-allowed}
-.ppc-action:disabled:hover{background:transparent;color:color-mix(in oklab,var(--foreground) 55%,transparent)}
+.ppc-action:disabled:hover{background:color-mix(in oklab,var(--foreground) 5%,transparent);color:color-mix(in oklab,var(--foreground) 72%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--foreground) 8%,transparent)}
+
+.ppc-pill{
+  display:inline-flex;align-items:center;gap:6px;height:34px;padding-inline:10px;border-radius:11px;
+  font-size:12.5px;font-weight:500;flex:none;min-width:0;
+  color:color-mix(in oklab,var(--foreground) 72%,transparent);
+  background:color-mix(in oklab,var(--foreground) 5%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--foreground) 8%,transparent);
+  transition:background .15s ease,color .15s ease,box-shadow .15s ease,transform .15s ease;
+}
+.ppc-pill:hover,.ppc-pill[aria-expanded="true"]{
+  background:color-mix(in oklab,var(--foreground) 10%,transparent);
+  color:var(--ppc-fg);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--foreground) 14%,transparent);
+}
+.ppc-pill:active{transform:scale(.97)}
+.ppc-pill[data-active="true"]{
+  color:var(--primary);
+  background:color-mix(in oklab,var(--primary) 13%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--primary) 30%,transparent);
+}
+.ppc-pill[data-active="true"]:hover,.ppc-pill[data-active="true"][aria-expanded="true"]{
+  background:color-mix(in oklab,var(--primary) 18%,transparent);
+  color:var(--primary);
+  box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--primary) 38%,transparent);
+}
+.ppc-pill-ic{flex:none;opacity:.88}
+.ppc-chev{flex:none;opacity:.6;transition:transform .25s ease}
+.ppc-pill[aria-expanded="true"] .ppc-chev{transform:rotate(180deg);opacity:.9}
+
+.ppc-model{max-width:clamp(100px,26vw,168px);flex:0 1 auto}
+.ppc-model .ogb-btn{width:100%}
+.ppc-model-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
 .ppc-spin{animation:ppc-spin 1s linear infinite}
 @keyframes ppc-spin{to{transform:rotate(360deg)}}
 
@@ -1054,22 +1203,26 @@ const PPC_CSS = `
 .ppc-device-tabs i:first-child{background:var(--ppc-a2)}
 
 @media (max-width:760px){
-  .ppc-card{padding:7px 8px;border-radius:18px}
-  .ppc-glass{border-radius:18px}
+  .ppc-card{padding:12px 12px 10px;border-radius:20px}
+  .ppc-glass{border-radius:20px}
+  .ppc-field{padding:2px 2px 10px}
+  .ppc-input{min-height:42px}
   .ppc-done{grid-template-columns:1fr}
   .ppc-device{justify-self:center}
   .ppc-hint{display:none}
 }
 @media (max-width:420px){
-  .ppc-chip{height:30px;padding-inline:8px 9px;font-size:12px}
+  .ppc-chip{height:32px;padding-inline:8px 9px;font-size:12px}
   .ppc-input,.ppc-ph{font-size:14.5px}
-  .ppc-tools{gap:6px}
-  .ppc-left{gap:6px}
-  .ppc-right{gap:6px}
-  .ppc-model{max-width:118px;padding-inline:7px}
+  .ppc-tools{gap:5px}
+  .ppc-left{gap:5px}
+  .ppc-right{gap:5px}
+  .ppc-action{width:32px;height:32px;border-radius:10px}
+  .ppc-pill{height:32px;padding-inline:8px;border-radius:10px;font-size:12px;gap:5px}
+  .ppc-model{max-width:128px}
 }
 @media (max-width:360px){
-  .ppc-model{max-width:96px}
+  .ppc-model{max-width:104px}
   .ppc-send{width:34px;height:34px}
 }
 @media (prefers-reduced-motion:reduce){

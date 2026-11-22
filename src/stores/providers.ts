@@ -7,7 +7,8 @@ import { normalizeBaseUrl } from "@/lib/normalize";
 import { suggestedMeta } from "@/lib/registry";
 import { runWithConcurrency } from "@/lib/http";
 import { uid } from "@/lib/id";
-import type { AIModel, ApiFormat, ErrorKind, PingResult, Provider } from "@/lib/types";
+import { useRoutersStore } from "@/stores/routers";
+import type { AIModel, ApiFormat, ErrorKind, PingResult, PricingClass, Provider } from "@/lib/types";
 
 export interface ProviderDraft {
   name: string;
@@ -32,6 +33,7 @@ export interface ModelDraft {
   displayName?: string;
   contextWindow?: number;
   pricing?: { prompt: number; completion: number };
+  pricingTier?: PricingClass;
   capabilities?: AIModel["capabilities"];
   tier?: AIModel["tier"];
   source?: AIModel["source"];
@@ -52,6 +54,10 @@ interface ProvidersState {
   setProviderFavorite: (id: string, favorite: boolean) => Promise<void>;
   reorderProviders: (ids: string[]) => Promise<void>;
   addModels: (providerId: string, entries: ModelDraft[]) => Promise<number>;
+  applyModelPricing: (
+    providerId: string,
+    updates: ReadonlyMap<string, { pricingTier: PricingClass; pricing?: { prompt: number; completion: number } }>,
+  ) => Promise<void>;
   updateModel: (id: string, patch: Partial<AIModel>) => Promise<void>;
   deleteModel: (id: string) => Promise<void>;
   duplicateModel: (id: string) => Promise<void>;
@@ -75,13 +81,23 @@ export const useProvidersStore = create<ProvidersState>()((set, get) => ({
   loading: false,
   working: {},
 
-  load: async () => {
+      load: async () => {
     set({ loading: true });
-    const [providers, models, pings] = await Promise.all([
+    const [rawProviders, models, pings] = await Promise.all([
       listProviders(),
       listModels(),
       db.pings.orderBy("at").reverse().limit(600).toArray(),
     ]);
+    // Scrub legacy technical preset notes that may have been persisted in IndexedDB earlier.
+    const staleIds: string[] = [];
+    const providers = rawProviders.map((p) => {
+      if (!p.notes) return p;
+      staleIds.push(p.id);
+      return { ...p, notes: undefined };
+    });
+    if (staleIds.length > 0) {
+      void Promise.all(staleIds.map((id) => db.providers.update(id, { notes: undefined }))).catch(() => undefined);
+    }
     set({ providers, models, pings, loading: false });
   },
 
@@ -151,6 +167,7 @@ export const useProvidersStore = create<ProvidersState>()((set, get) => ({
       models: state.models.filter((m) => m.providerId !== id),
       pings: state.pings.filter((p) => p.providerId !== id),
     }));
+    void useRoutersStore.getState().syncProviderDeleted(id);
   },
 
   duplicateProvider: async (id) => {
@@ -250,6 +267,7 @@ export const useProvidersStore = create<ProvidersState>()((set, get) => ({
         capabilities: entry.capabilities ?? meta.capabilities,
         tier: entry.tier ?? meta.tier,
         pricing: entry.pricing ?? meta.pricing,
+        pricingTier: entry.pricingTier ?? entry.tier ?? "unknown",
         enabled: true,
         favorite: false,
         order,
@@ -262,6 +280,29 @@ export const useProvidersStore = create<ProvidersState>()((set, get) => ({
     await db.models.bulkPut(created);
     set((state) => ({ models: [...state.models, ...created] }));
     return created.length;
+  },
+
+  applyModelPricing: async (providerId, updates) => {
+    if (updates.size === 0) return;
+    const now = Date.now();
+    const changed: AIModel[] = [];
+    const nextModels = get().models.map((m) => {
+      if (m.providerId !== providerId) return m;
+      const hit = updates.get(m.modelId) ?? updates.get(m.modelId.toLowerCase());
+      if (!hit) return m;
+      const updated: AIModel = {
+        ...m,
+        pricingTier: hit.pricingTier,
+        tier: hit.pricingTier,
+        ...(hit.pricing ? { pricing: hit.pricing } : {}),
+        updatedAt: now,
+      };
+      changed.push(updated);
+      return updated;
+    });
+    if (changed.length === 0) return;
+    await db.models.bulkPut(changed);
+    set({ models: nextModels });
   },
 
   updateModel: async (id, patch) => {

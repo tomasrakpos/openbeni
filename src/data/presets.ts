@@ -54,7 +54,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     icon: "openrouter",
     color: "#8b5cf6",
     useProxy: true,
-    notes: "OpenRouter blocks direct browser requests (CORS/region policy), so requests go through the built-in /api/proxy. Deploy the Cloudflare Pages Function for the best results; a local dev server still uses this machine's IP.",
   },
   {
     id: "pollinations",
@@ -64,7 +63,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     auth: { header: "Authorization", prefix: "Bearer " },
     icon: "pollinations",
     color: "#e0a82e",
-    notes: "OpenAI-compatible gateway with a very large model catalog. Uses a bearer API key; some community models are free.",
   },
   {
     id: "groq",
@@ -119,7 +117,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     auth: { header: "", prefix: "" },
     icon: "ollama",
     color: "#4b5563",
-    notes: "Runs on your machine. Start it with OLLAMA_ORIGINS=* so the browser can reach it.",
     local: true,
   },
 ];

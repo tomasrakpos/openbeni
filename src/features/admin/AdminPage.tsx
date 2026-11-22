@@ -2,16 +2,29 @@
 import {
   Activity,
   AlertTriangle,
+  Ban,
   BarChart3,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Coins,
+  Cpu,
+  Eye,
+  EyeOff,
   FlaskConical,
   KeyRound,
   Loader2,
+  MessageSquare,
   Plus,
   RefreshCw,
+  Route,
+  Search,
   Server,
   Settings2,
   ShieldAlert,
+  ShieldCheck,
+  Sparkles,
   Trash2,
   Users,
   XCircle,
@@ -36,9 +49,11 @@ import { PROVIDER_PRESETS } from "@/data/presets";
 import { apiFetch } from "@/lib/api";
 import { devAdminPreview, disableDevAdminPreview } from "@/lib/devAdminMock";
 import { useAdminT } from "@/features/admin/adminStrings";
+import type { KeyHealthReport, ProviderInspectSummary } from "@/lib/providerInspectClient";
 import { formatTokens } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useCatalogStore } from "@/stores/catalog";
+import { useRoutersStore } from "@/stores/routers";
 
 type Tab = "providers" | "users" | "usage" | "settings";
 
@@ -71,6 +86,28 @@ interface AdminModel {
   upstream_verified: boolean;
   context_window: number | null;
   paid?: boolean;
+  pricing?: "free" | "paid" | "unknown";
+}
+
+interface AdminRouter {
+  id: string;
+  providerId: string | null;
+  providerName?: string;
+  name: string;
+  type: "free";
+  enabled: boolean;
+  activeMemberCount: number;
+  memberModelIds: string[];
+  createdAt: string;
+}
+
+interface AdminUserModelUsage {
+  model: string;
+  provider: string;
+  source: "admin" | "default";
+  messages: number;
+  tokens: number;
+  lastUsedAt: string;
 }
 
 interface AdminUser {
@@ -83,8 +120,12 @@ interface AdminUser {
   monthly_token_limit: number | null;
   created_at: string;
   last_seen_at: string;
+  online?: boolean;
+  offlineDays?: number | null;
   totalTokens: number;
   requests: number;
+  messagesSent?: number;
+  modelsUsed?: AdminUserModelUsage[];
 }
 
 interface UsageStats {
@@ -123,6 +164,47 @@ export interface AdminDiagnostics {
 function dateLabel(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+}
+
+function dateTimeLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function computePresence(
+  user: AdminUser,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): {
+  kind: "online" | "recent" | "offline" | "long-offline" | "never";
+  label: string;
+  offlineDays: number | null;
+} {
+  if (!user.last_seen_at) {
+    return { kind: "never", label: t("admin.neverOnline"), offlineDays: null };
+  }
+  const ts = Date.parse(user.last_seen_at);
+  if (!Number.isFinite(ts)) {
+    return { kind: "never", label: t("admin.neverOnline"), offlineDays: null };
+  }
+  const diffMs = Math.max(0, Date.now() - ts);
+  const mins = Math.floor(diffMs / 60_000);
+  const hours = Math.floor(diffMs / 3_600_000);
+  const days = typeof user.offlineDays === "number" ? user.offlineDays : Math.floor(diffMs / 86_400_000);
+
+  if (user.online || diffMs <= 5 * 60_000) {
+    return { kind: "online", label: t("admin.onlineNow"), offlineDays: 0 };
+  }
+  if (mins < 60) {
+    return { kind: "recent", label: t("admin.minsAgo", { n: Math.max(1, mins) }), offlineDays: 0 };
+  }
+  if (hours < 24) {
+    return { kind: "recent", label: t("admin.hoursAgo", { n: hours }), offlineDays: 0 };
+  }
+  return {
+    kind: days >= 7 ? "long-offline" : "offline",
+    label: t("admin.daysOffline", { n: days }),
+    offlineDays: days,
+  };
 }
 
 const CARD = "rounded-[16px] border border-[var(--border)] bg-[var(--surface-glass)] backdrop-blur-xl";
@@ -297,29 +379,102 @@ function DiagnosticsStrip({ initial }: { initial?: AdminDiagnostics }) {
 /* Providers                                                                  */
 /* -------------------------------------------------------------------------- */
 
+interface ProviderTestReport {
+  tested: number;
+  healthy: number;
+  keyHealth?: KeyHealthReport;
+  summary?: ProviderInspectSummary;
+  testedAt: number;
+}
+
 function ProvidersTab() {
   const t = useAdminT();
   const refreshCatalog = useCatalogStore((s) => s.refresh);
+  const refreshPublicRouters = useRoutersStore((s) => s.refresh);
   const [providers, setProviders] = React.useState<AdminProvider[]>([]);
+  const [routers, setRouters] = React.useState<AdminRouter[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<string | null>(null);
   const [models, setModels] = React.useState<Record<string, AdminModel[]>>({});
+  const [testReports, setTestReports] = React.useState<Record<string, ProviderTestReport>>({});
   const [testing, setTesting] = React.useState<string | null>(null);
   const [form, setForm] = React.useState({ ...EMPTY_PROVIDER_FORM });
   const [selectedPreset, setSelectedPreset] = React.useState("");
   const [creating, setCreating] = React.useState(false);
 
+  const loadRouters = React.useCallback(async () => {
+    try {
+      const data = await apiFetch<{ routers: AdminRouter[] }>("/api/admin/routers");
+      setRouters(data.routers ?? []);
+    } catch {
+      // Ignore when routers table is unavailable
+    }
+  }, []);
+
   const load = React.useCallback(async () => {
     try {
-      const data = await apiFetch<{ providers: AdminProvider[] }>("/api/admin/providers");
+      const [data, routerData] = await Promise.all([
+        apiFetch<{ providers: AdminProvider[] }>("/api/admin/providers"),
+        apiFetch<{ routers: AdminRouter[] }>("/api/admin/routers").catch(() => ({ routers: [] })),
+      ]);
       setProviders(data.providers ?? []);
+      setRouters(routerData.routers ?? []);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("error.generic"));
     } finally {
       setLoading(false);
     }
   }, [t]);
+
+  const createRouter = async (providerId: string, name: string): Promise<boolean> => {
+    setBusy(providerId);
+    try {
+      await apiFetch("/api/admin/routers", {
+        method: "POST",
+        body: { providerId, name },
+      });
+      await loadRouters();
+      void refreshPublicRouters();
+      toast.success(t("admin.routerCreated"));
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("error.generic"));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleRouter = async (router: AdminRouter) => {
+    setBusy(router.providerId ?? router.id);
+    try {
+      await apiFetch(`/api/admin/routers/${router.id}`, {
+        method: "PATCH",
+        body: { enabled: !router.enabled },
+      });
+      await loadRouters();
+      void refreshPublicRouters();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("error.generic"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteRouter = async (router: AdminRouter) => {
+    setBusy(router.providerId ?? router.id);
+    try {
+      await apiFetch(`/api/admin/routers/${router.id}`, { method: "DELETE" });
+      await loadRouters();
+      void refreshPublicRouters();
+      toast.success(t("admin.routerDeleted"));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("error.generic"));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   React.useEffect(() => {
     void load();
@@ -365,7 +520,7 @@ function ProvidersTab() {
       .filter(Boolean);
     setCreating(true);
     try {
-      await apiFetch("/api/admin/providers", {
+      const created = await apiFetch<{ provider: AdminProvider }>("/api/admin/providers", {
         method: "POST",
         body: {
           name: form.name.trim(),
@@ -378,9 +533,14 @@ function ProvidersTab() {
       });
       setForm({ ...EMPTY_PROVIDER_FORM });
       setSelectedPreset("");
-      toast.success(t("admin.saved"));
+      toast.success(keys.length > 0 ? t("admin.autoPublishing") : t("admin.saved"));
       await load();
-      void refreshCatalog();
+      // Immediately discover & publish enabled models to the public site when keys were supplied.
+      if (created?.provider && keys.length > 0) {
+        await testProvider(created.provider);
+      } else {
+        void refreshCatalog();
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("error.generic"));
     } finally {
@@ -466,53 +626,129 @@ function ProvidersTab() {
   const testProvider = async (provider: AdminProvider) => {
     setTesting(provider.id);
     try {
-      const data = await apiFetch<{ tested: number; healthy: number; models: AdminModel[] }>(
+      const data = await apiFetch<{
+        tested: number;
+        healthy: number;
+        keyHealth?: KeyHealthReport;
+        summary?: ProviderInspectSummary;
+        models: AdminModel[];
+      }>(
         `/api/admin/providers/${provider.id}/test`,
         { method: "POST" },
       );
       setModels((current) => ({ ...current, [provider.id]: data.models ?? [] }));
+      setTestReports((current) => ({
+        ...current,
+        [provider.id]: {
+          tested: data.tested,
+          healthy: data.healthy,
+          keyHealth: data.keyHealth,
+          summary: data.summary,
+          testedAt: Date.now(),
+        },
+      }));
       setExpanded(provider.id);
-      toast.success(t("admin.testResult", { ok: data.healthy, total: data.tested }));
+      if (data.keyHealth && data.summary) {
+        const tierNote = `${data.summary.freeCount} Free · ${data.summary.paidCount} Paid`;
+        if (data.keyHealth.status === "healthy") {
+          toast.success(`${data.keyHealth.message} (${tierNote})`);
+        } else if (data.keyHealth.status === "free_only" || data.keyHealth.status === "rate_limited") {
+          toast.message(`${data.keyHealth.message} (${tierNote})`);
+        } else {
+          toast.error(`${data.keyHealth.message} (${tierNote})`);
+        }
+      } else {
+        toast.success(t("admin.testResult", { ok: data.healthy, total: data.tested }));
+      }
       await load();
       void refreshCatalog();
+      void refreshPublicRouters();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("error.generic"));
+      const status =
+        error && typeof error === "object" && "status" in error && typeof (error as { status?: unknown }).status === "number"
+          ? (error as { status: number }).status
+          : undefined;
+      const message = error instanceof Error ? error.message : t("error.generic");
+      const keyStatus =
+        status === 401
+          ? "invalid_key"
+          : status === 403
+            ? "forbidden"
+            : status === 429
+              ? "rate_limited"
+              : "unreachable";
+      setTestReports((current) => ({
+        ...current,
+        [provider.id]: {
+          tested: 0,
+          healthy: 0,
+          keyHealth: {
+            status: keyStatus,
+            ok: false,
+            ...(status ? { httpStatus: status } : {}),
+            latencyMs: null,
+            message,
+          },
+          testedAt: Date.now(),
+        },
+      }));
+      toast.error(message);
     } finally {
       setTesting(null);
     }
   };
 
-  const toggleModel = async (providerId: string, model: AdminModel) => {
+  const setModelVisibility = async (
+    providerId: string,
+    model: AdminModel,
+    state: "free" | "paid" | "hidden",
+  ) => {
+    const enabled = state !== "hidden";
+    const paid = state === "paid";
     try {
       await apiFetch(`/api/admin/models/${model.id}`, {
         method: "PATCH",
-        body: { enabled: !model.enabled },
+        body: enabled ? { enabled: true, paid } : { enabled: false },
       });
       setModels((current) => ({
         ...current,
         [providerId]: (current[providerId] ?? []).map((entry) =>
-          entry.id === model.id ? { ...entry, enabled: !entry.enabled } : entry,
+          entry.id === model.id
+            ? { ...entry, enabled, ...(enabled ? { paid, pricing: paid ? "paid" : "free" } : {}) }
+            : entry,
         ),
       }));
+      void loadRouters();
       void refreshCatalog();
+      void refreshPublicRouters();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("error.generic"));
     }
   };
 
-  const toggleModelPaid = async (providerId: string, model: AdminModel) => {
-    const paid = !model.paid;
+  const bulkModels = async (
+    providerId: string,
+    action: "show_all" | "hide_all" | "free_all" | "paid_all",
+  ) => {
+    setBusy(providerId);
     try {
-      await apiFetch(`/api/admin/models/${model.id}`, { method: "PATCH", body: { paid } });
-      setModels((current) => ({
-        ...current,
-        [providerId]: (current[providerId] ?? []).map((entry) =>
-          entry.id === model.id ? { ...entry, paid } : entry,
-        ),
-      }));
+      const data = await apiFetch<{ models: AdminModel[] }>(
+        `/api/admin/providers/${providerId}/models/bulk`,
+        { method: "POST", body: { action } },
+      );
+      if (Array.isArray(data.models)) {
+        setModels((current) => ({ ...current, [providerId]: data.models }));
+      } else {
+        await loadModels(providerId);
+      }
+      toast.success(t("admin.saved"));
+      void loadRouters();
       void refreshCatalog();
+      void refreshPublicRouters();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("error.generic"));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -654,6 +890,8 @@ function ProvidersTab() {
               key={provider.id}
               provider={provider}
               models={models[provider.id]}
+              routers={routers.filter((r) => r.providerId === provider.id)}
+              report={testReports[provider.id]}
               busy={busy === provider.id}
               testing={testing === provider.id}
               expanded={expanded === provider.id}
@@ -666,9 +904,12 @@ function ProvidersTab() {
               onTest={() => void testProvider(provider)}
               onAddKeys={(raw) => void addKeys(provider, raw)}
               onRemoveKey={(keyId) => void removeKey(provider, keyId)}
-              onToggleModel={(model) => void toggleModel(provider.id, model)}
-              onTogglePaid={(model) => void toggleModelPaid(provider.id, model)}
+              onSetModelVisibility={(model, state) => void setModelVisibility(provider.id, model, state)}
+              onBulkModels={(action) => void bulkModels(provider.id, action)}
               onRenameModel={(model, name) => void renameModel(provider.id, model, name)}
+              onCreateRouter={(name) => createRouter(provider.id, name)}
+              onToggleRouter={(router) => void toggleRouter(router)}
+              onDeleteRouter={(router) => void deleteRouter(router)}
             />
           ))}
         </>
@@ -680,6 +921,8 @@ function ProvidersTab() {
 function ProviderCard({
   provider,
   models,
+  routers,
+  report,
   busy,
   testing,
   expanded,
@@ -689,12 +932,17 @@ function ProviderCard({
   onTest,
   onAddKeys,
   onRemoveKey,
-  onToggleModel,
-  onTogglePaid,
+  onSetModelVisibility,
+  onBulkModels,
   onRenameModel,
+  onCreateRouter,
+  onToggleRouter,
+  onDeleteRouter,
 }: {
   provider: AdminProvider;
   models?: AdminModel[];
+  routers: AdminRouter[];
+  report?: ProviderTestReport;
   busy: boolean;
   testing: boolean;
   expanded: boolean;
@@ -704,12 +952,56 @@ function ProviderCard({
   onTest: () => void;
   onAddKeys: (raw: string) => void;
   onRemoveKey: (keyId: string) => void;
-  onToggleModel: (model: AdminModel) => void;
-  onTogglePaid: (model: AdminModel) => void;
+  onSetModelVisibility: (model: AdminModel, state: "free" | "paid" | "hidden") => void;
+  onBulkModels: (action: "show_all" | "hide_all" | "free_all" | "paid_all") => void;
   onRenameModel: (model: AdminModel, name: string) => void;
+  onCreateRouter: (name: string) => Promise<boolean>;
+  onToggleRouter: (router: AdminRouter) => void;
+  onDeleteRouter: (router: AdminRouter) => void;
 }) {
   const t = useAdminT();
   const [newKeys, setNewKeys] = React.useState("");
+  const [tierFilter, setTierFilter] = React.useState<"all" | "free" | "paid" | "hidden">("all");
+  const [modelSearch, setModelSearch] = React.useState("");
+  const [routerName, setRouterName] = React.useState("");
+  const [creatingRouter, setCreatingRouter] = React.useState(false);
+  const freeModelsCount = models
+    ? models.filter((m) => m.enabled && !m.paid && m.pricing === "free").length
+    : (report?.summary?.freeCount ?? 0);
+  const paidModelsCount = models
+    ? models.filter((m) => m.enabled && (m.paid || m.pricing === "paid")).length
+    : (report?.summary?.paidCount ?? 0);
+  const hiddenModelsCount = models ? models.filter((m) => !m.enabled).length : 0;
+  const filteredModels = React.useMemo(() => {
+    if (!models) return [];
+    const q = modelSearch.trim().toLowerCase();
+    return models.filter((m) => {
+      if (tierFilter === "free" && (!m.enabled || m.paid || m.pricing !== "free")) return false;
+      if (tierFilter === "paid" && (!m.enabled || (!m.paid && m.pricing !== "paid"))) return false;
+      if (tierFilter === "hidden" && m.enabled) return false;
+      if (!q) return true;
+      return m.display_name.toLowerCase().includes(q) || m.upstream_id.toLowerCase().includes(q);
+    });
+  }, [models, tierFilter, modelSearch]);
+
+  const submitRouter = async () => {
+    if (creatingRouter || freeModelsCount === 0) return;
+    setCreatingRouter(true);
+    try {
+      const ok = await onCreateRouter(routerName);
+      if (ok) setRouterName("");
+    } finally {
+      setCreatingRouter(false);
+    }
+  };
+  const kh = report?.keyHealth;
+  const khTone = kh
+    ? kh.status === "healthy"
+      ? "ok"
+      : kh.status === "free_only" || kh.status === "rate_limited"
+        ? "warn"
+        : "bad"
+    : null;
 
   return (
     <section className={cn(CARD, "overflow-hidden")}>
@@ -731,6 +1023,45 @@ function ProviderCard({
           {t("admin.healthyKeys", { ok: provider.healthyKeys, total: provider.keyCount })}
         </Badge>
         <Badge variant="unknown">{provider.api_format}</Badge>
+        {kh && khTone ? (
+          <Badge
+            variant={khTone === "ok" ? "primary" : "unknown"}
+            className={cn(
+              khTone === "ok" && "border-[var(--success)]/40 bg-[var(--success)]/12 text-[var(--success)]",
+              khTone === "warn" && "border-[var(--warning)]/40 bg-[var(--warning)]/12 text-[var(--warning)]",
+              khTone === "bad" && "border-[var(--destructive)]/40 bg-[var(--destructive)]/12 text-[var(--destructive)]",
+            )}
+          >
+            {khTone === "ok" ? <CheckCircle2 className="size-3" /> : khTone === "warn" ? <AlertTriangle className="size-3" /> : <ShieldAlert className="size-3" />}
+            {kh.status === "healthy"
+              ? "Verified"
+              : kh.status === "free_only"
+                ? "Free Only"
+                : kh.status === "rate_limited"
+                  ? "Rate Limited"
+                  : kh.status === "insufficient_balance"
+                    ? "No Balance"
+                    : kh.status === "invalid_key"
+                      ? "Key Rejected"
+                      : kh.status === "forbidden"
+                        ? "Forbidden"
+                        : "Unreachable"}
+            {kh.latencyMs != null ? ` · ${kh.latencyMs}ms` : ""}
+          </Badge>
+        ) : null}
+        {(models && models.length > 0) || report?.summary ? (
+          <Badge variant="unknown" className="gap-1.5 font-mono text-[10.5px]">
+            <span className="text-[var(--success)]">{freeModelsCount} {t("admin.free")}</span>
+            <span className="opacity-40">/</span>
+            <span className="text-[var(--warning)]">{paidModelsCount} {t("admin.paid")}</span>
+            {hiddenModelsCount > 0 ? (
+              <>
+                <span className="opacity-40">/</span>
+                <span className="text-[var(--faint)]">{hiddenModelsCount} {t("admin.hidden")}</span>
+              </>
+            ) : null}
+          </Badge>
+        ) : null}
         <Switch checked={provider.enabled} onCheckedChange={onToggle} disabled={busy} aria-label={t("admin.enabled")} />
         <Button size="xs" variant="secondary" onClick={onTest} disabled={testing || busy}>
           {testing ? <Loader2 className="size-3.5 animate-spin" /> : <Activity className="size-3.5" />}
@@ -745,7 +1076,50 @@ function ProviderCard({
       </div>
 
       {expanded ? (
-        <div className="grid gap-4 border-t border-[var(--border)] p-4 lg:grid-cols-2">
+        <div className="border-t border-[var(--border)]">
+          {kh && khTone ? (
+            <div
+              className={cn(
+                "mx-4 mt-4 flex flex-wrap items-start justify-between gap-3 rounded-[12px] border px-3.5 py-2.5 text-[11.5px]",
+                khTone === "ok" && "border-[var(--success)]/35 bg-[var(--success)]/10",
+                khTone === "warn" && "border-[var(--warning)]/35 bg-[var(--warning)]/10",
+                khTone === "bad" && "border-[var(--destructive)]/40 bg-[var(--destructive)]/10",
+              )}
+            >
+              <div className="flex min-w-0 items-start gap-2.5">
+                {khTone === "ok" ? (
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[var(--success)]" />
+                ) : khTone === "warn" ? (
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
+                ) : (
+                  <ShieldAlert className="mt-0.5 size-4 shrink-0 text-[var(--destructive)]" />
+                )}
+                <div className="min-w-0">
+                  <p className="font-medium text-foreground">{kh.message}</p>
+                  <p className="mt-0.5 font-mono text-[10.5px] text-[var(--muted-foreground)]">
+                    {kh.testedModel ? `Probe: ${kh.testedModel}` : "Models check"}
+                    {kh.latencyMs != null ? ` · ${kh.latencyMs}ms` : ""}
+                    {kh.httpStatus ? ` · HTTP ${kh.httpStatus}` : ""}
+                  </p>
+                </div>
+              </div>
+              {report?.summary ? (
+                <div className="flex items-center gap-2 font-mono text-[11px]">
+                  <span className="rounded-full bg-[var(--surface-2)] px-2 py-0.5">
+                    Total {report.summary.totalModels}
+                  </span>
+                  <span className="rounded-full bg-[var(--success)]/15 px-2 py-0.5 text-[var(--success)]">
+                    Free {report.summary.freeCount}
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--warning)]/15 px-2 py-0.5 text-[var(--warning)]">
+                    <Coins className="size-3" />
+                    Paid {report.summary.paidCount}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="grid gap-4 p-4 lg:grid-cols-2">
           <div>
             <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold">
               <KeyRound className="size-3.5" />
@@ -819,56 +1193,265 @@ function ProviderCard({
           </div>
 
           <div>
-            <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold">
-              <Server className="size-3.5" />
-              {t("admin.models")}
-            </h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="flex items-center gap-1.5 text-[12px] font-semibold">
+                <Server className="size-3.5" />
+                {t("admin.models")}
+                {models && models.length > 0 ? (
+                  <span className="font-mono text-[10.5px] font-normal text-[var(--faint)]">({models.length})</span>
+                ) : null}
+              </h3>
+              {models && models.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1 text-[10.5px]">
+                  <button
+                    type="button"
+                    onClick={() => setTierFilter("all")}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 transition-colors",
+                      tierFilter === "all"
+                        ? "border-[var(--primary)]/50 bg-[var(--primary)]/12 text-foreground"
+                        : "border-[var(--border)] text-[var(--faint)] hover:text-foreground",
+                    )}
+                  >
+                    {t("admin.filterAll")} ({models.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTierFilter("free")}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 transition-colors",
+                      tierFilter === "free"
+                        ? "border-[var(--success)]/50 bg-[var(--success)]/15 text-[var(--success)]"
+                        : "border-[var(--border)] text-[var(--faint)] hover:text-foreground",
+                    )}
+                  >
+                    {t("admin.free")} ({freeModelsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTierFilter("paid")}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 transition-colors",
+                      tierFilter === "paid"
+                        ? "border-[var(--warning)]/50 bg-[var(--warning)]/15 text-[var(--warning)]"
+                        : "border-[var(--border)] text-[var(--faint)] hover:text-foreground",
+                    )}
+                  >
+                    {t("admin.paid")} ({paidModelsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTierFilter("hidden")}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 transition-colors",
+                      tierFilter === "hidden"
+                        ? "border-[var(--border-strong)] bg-[var(--surface-3)] text-foreground"
+                        : "border-[var(--border)] text-[var(--faint)] hover:text-foreground",
+                    )}
+                  >
+                    {t("admin.hidden")} ({hiddenModelsCount})
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            <p className="mb-2 flex items-center gap-1.5 text-[10.5px] text-[var(--muted-foreground)]">
+              <EyeOff className="size-3 shrink-0 text-[var(--primary)]" />
+              <span>{t("admin.publicPrivacyHint")}</span>
+            </p>
+
+            {models && models.length > 0 ? (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                <div className="relative min-w-[140px] flex-1">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-[var(--faint)]" />
+                  <Input
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    placeholder={t("admin.searchModels")}
+                    className="h-7 pl-7 text-[11px]"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button size="xs" variant="ghost" disabled={busy} onClick={() => onBulkModels("free_all")}>
+                    {t("admin.bulkFreeAll")}
+                  </Button>
+                  <Button size="xs" variant="ghost" disabled={busy} onClick={() => onBulkModels("paid_all")}>
+                    {t("admin.bulkPaidAll")}
+                  </Button>
+                  <Button size="xs" variant="ghost" disabled={busy} onClick={() => onBulkModels("show_all")}>
+                    <Eye className="size-3" />
+                    {t("admin.bulkShowAll")}
+                  </Button>
+                  <Button size="xs" variant="ghost" disabled={busy} onClick={() => onBulkModels("hide_all")}>
+                    <EyeOff className="size-3" />
+                    {t("admin.bulkHideAll")}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             {!models || models.length === 0 ? (
               <p className="text-[11.5px] text-[var(--muted-foreground)]">{t("admin.noModels")}</p>
             ) : (
-              <ul className="flex max-h-[280px] flex-col gap-1.5 overflow-auto pr-1">
-                {models.map((model) => (
-                  <li
-                    key={model.id}
-                    className="flex items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5"
-                  >
-                    <Switch
-                      checked={model.enabled}
-                      onCheckedChange={() => onToggleModel(model)}
-                      aria-label={model.display_name}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <input
-                        defaultValue={model.display_name}
-                        onBlur={(event) => onRenameModel(model, event.target.value)}
-                        className="w-full truncate bg-transparent text-[11.5px] font-medium outline-none"
-                        aria-label={t("admin.modelName")}
-                      />
-                      <p className="truncate font-mono text-[10px] text-[var(--faint)]">{model.upstream_id}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onTogglePaid(model)}
-                      title={t("admin.paidHint")}
-                      aria-pressed={model.paid === true}
+              <ul className="flex max-h-[300px] flex-col gap-1.5 overflow-auto pr-1">
+                {filteredModels.map((model) => {
+                  const visState: "free" | "paid" | "hidden" = !model.enabled
+                    ? "hidden"
+                    : model.paid
+                      ? "paid"
+                      : "free";
+                  return (
+                    <li
+                      key={model.id}
                       className={cn(
-                        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors",
-                        model.paid
-                          ? "border-[var(--warning)]/50 bg-[var(--warning)]/15 text-[var(--warning)]"
-                          : "border-[var(--border)] text-[var(--faint)] hover:text-foreground",
+                        "flex items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 transition-opacity",
+                        visState === "hidden" && "opacity-60",
                       )}
                     >
-                      {t("admin.paid")}
-                    </button>
-                    {model.upstream_verified ? (
-                      <CheckCircle2 className="size-3.5 text-[var(--success)]" />
-                    ) : (
-                      <AlertTriangle className="size-3.5 text-[var(--destructive)]" />
-                    )}
-                  </li>
-                ))}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            defaultValue={model.display_name}
+                            onBlur={(event) => onRenameModel(model, event.target.value)}
+                            className="w-full truncate bg-transparent text-[11.5px] font-medium outline-none"
+                            aria-label={t("admin.modelName")}
+                          />
+                          {model.pricing === "unknown" && !model.paid ? (
+                            <Badge variant="unknown" className="shrink-0 text-[9px]">
+                              {t("admin.pricingUnknown")}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <p className="truncate font-mono text-[10px] text-[var(--faint)]">{model.upstream_id}</p>
+                      </div>
+                      <div className="inline-flex shrink-0 items-center gap-0.5 rounded-[8px] border border-[var(--border)] bg-[var(--surface-1)] p-0.5 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => onSetModelVisibility(model, "free")}
+                          aria-pressed={visState === "free"}
+                          className={cn(
+                            "rounded-[6px] px-2 py-0.5 font-medium transition-colors",
+                            visState === "free"
+                              ? "bg-[var(--success)]/18 text-[var(--success)]"
+                              : "text-[var(--faint)] hover:text-foreground",
+                          )}
+                        >
+                          {t("admin.free")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSetModelVisibility(model, "paid")}
+                          aria-pressed={visState === "paid"}
+                          className={cn(
+                            "rounded-[6px] px-2 py-0.5 font-medium transition-colors",
+                            visState === "paid"
+                              ? "bg-[var(--warning)]/18 text-[var(--warning)]"
+                              : "text-[var(--faint)] hover:text-foreground",
+                          )}
+                        >
+                          {t("admin.paid")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSetModelVisibility(model, "hidden")}
+                          aria-pressed={visState === "hidden"}
+                          className={cn(
+                            "rounded-[6px] px-2 py-0.5 font-medium transition-colors",
+                            visState === "hidden"
+                              ? "bg-[var(--surface-3)] text-foreground"
+                              : "text-[var(--faint)] hover:text-foreground",
+                          )}
+                        >
+                          {t("admin.hidden")}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
+
+            <div className="mt-3 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/60 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 text-[11.5px] font-semibold">
+                  <Route className="size-3.5 text-[var(--primary)]" />
+                  <span>{t("admin.routerCreateFromFree")}</span>
+                  <Badge variant="unknown" className="text-[9.5px]">
+                    {t("admin.routerActiveCount", { n: freeModelsCount })}
+                  </Badge>
+                </div>
+              </div>
+
+              {freeModelsCount === 0 ? (
+                <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]">
+                  {t("admin.routerNoFreeModels")}
+                </p>
+              ) : (
+                <div className="mt-2 flex items-center gap-1.5">
+                  <Input
+                    value={routerName}
+                    onChange={(event) => setRouterName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void submitRouter();
+                    }}
+                    placeholder={t("admin.routerNamePlaceholder")}
+                    maxLength={32}
+                    disabled={busy || creatingRouter}
+                    className="h-7 flex-1 text-[11.5px]"
+                  />
+                  <Button
+                    size="xs"
+                    disabled={busy || creatingRouter || routerName.trim().length < 2}
+                    onClick={() => void submitRouter()}
+                  >
+                    {creatingRouter ? <Loader2 className="size-3 animate-spin" /> : <Route className="size-3" />}
+                    {t("admin.routerCreate")}
+                  </Button>
+                </div>
+              )}
+
+              {routers.length > 0 ? (
+                <ul className="mt-2 flex flex-col gap-1.5">
+                  {routers.map((router) => (
+                    <li
+                      key={router.id}
+                      className="flex items-center justify-between gap-2 rounded-[8px] border border-[var(--border)] bg-[var(--surface-1)] px-2.5 py-1.5 text-[11.5px]"
+                    >
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <Route className="size-3.5 shrink-0 text-[var(--primary)]" />
+                        <span className="truncate font-medium">{router.name}</span>
+                        <Badge variant="primary" className="text-[9.5px]">
+                          {t("admin.routerBadge")}
+                        </Badge>
+                        <span className="text-[10.5px] text-[var(--muted-foreground)]">
+                          {router.activeMemberCount > 0
+                            ? t("admin.routerActiveCount", { n: router.activeMemberCount })
+                            : t("admin.routerEmpty")}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={router.enabled}
+                          onCheckedChange={() => onToggleRouter(router)}
+                          disabled={busy}
+                          aria-label={router.enabled ? t("admin.enabled") : t("admin.disabled")}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRouter(router)}
+                          disabled={busy}
+                          className="text-[var(--faint)] transition-colors hover:text-[var(--destructive)]"
+                          aria-label={t("common.delete")}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          </div>
           </div>
         </div>
       ) : null}
@@ -885,7 +1468,8 @@ function UsersTab() {
   const [users, setUsers] = React.useState<AdminUser[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [search, setSearch] = React.useState("");
-  const [status, setStatus] = React.useState<"all" | "active" | "blocked">("all");
+  const [status, setStatus] = React.useState<"all" | "online" | "active" | "blocked">("all");
+  const [expandedUserId, setExpandedUserId] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -902,16 +1486,45 @@ function UsersTab() {
     void load();
   }, [load]);
 
+  const stats = React.useMemo(() => {
+    let onlineCount = 0;
+    let inactive3d = 0;
+    let blockedCount = 0;
+    let totalMessages = 0;
+    for (const u of users) {
+      const p = computePresence(u, t);
+      if (p.kind === "online") onlineCount += 1;
+      if (p.offlineDays !== null && p.offlineDays >= 3) inactive3d += 1;
+      if (u.status === "blocked") blockedCount += 1;
+      totalMessages += u.messagesSent ?? u.requests ?? 0;
+    }
+    return { total: users.length, onlineCount, inactive3d, blockedCount, totalMessages };
+  }, [users, t]);
+
   const filtered = users.filter((user) => {
-    if (status !== "all" && user.status !== status) return false;
+    const p = computePresence(user, t);
+    if (status === "online" && p.kind !== "online") return false;
+    if (status === "active" && user.status !== "active") return false;
+    if (status === "blocked" && user.status !== "blocked") return false;
     const term = search.trim().toLowerCase();
     if (!term) return true;
-    return user.email.toLowerCase().includes(term) || (user.display_name ?? "").toLowerCase().includes(term);
+    const inModels = (user.modelsUsed ?? []).some(
+      (m) => m.model.toLowerCase().includes(term) || m.provider.toLowerCase().includes(term),
+    );
+    return (
+      user.email.toLowerCase().includes(term) ||
+      (user.display_name ?? "").toLowerCase().includes(term) ||
+      inModels
+    );
   });
 
   const update = async (user: AdminUser, patch: Record<string, unknown>) => {
     try {
       await apiFetch(`/api/admin/users/${user.id}`, { method: "PATCH", body: patch });
+      const label = user.display_name || user.email;
+      if (patch.status === "blocked") toast.success(t("admin.userBlockedToast", { name: label }));
+      else if (patch.status === "active") toast.success(t("admin.userUnblockedToast", { name: label }));
+      else toast.success(t("admin.limitsSaved"));
       await load();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("error.generic"));
@@ -929,25 +1542,70 @@ function UsersTab() {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* KPI summary cards */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-5">
+        <div className={cn(CARD, "p-3")}>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--faint)]">
+            {t("admin.usersTotal")}
+          </p>
+          <p className="mt-1 font-mono text-[18px] font-semibold">{stats.total}</p>
+        </div>
+        <div className={cn(CARD, "p-3")}>
+          <p className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--success)]">
+            <span className="size-1.5 animate-pulse rounded-full bg-[var(--success)]" />
+            {t("admin.usersOnline")}
+          </p>
+          <p className="mt-1 font-mono text-[18px] font-semibold text-[var(--success)]">{stats.onlineCount}</p>
+        </div>
+        <div className={cn(CARD, "p-3")}>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--warning)]">
+            {t("admin.usersInactive3d")}
+          </p>
+          <p className="mt-1 font-mono text-[18px] font-semibold text-[var(--warning)]">{stats.inactive3d}</p>
+        </div>
+        <div className={cn(CARD, "p-3")}>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--destructive)]">
+            {t("admin.usersBlockedCount")}
+          </p>
+          <p className="mt-1 font-mono text-[18px] font-semibold text-[var(--destructive)]">{stats.blockedCount}</p>
+        </div>
+        <div className={cn(CARD, "col-span-2 p-3 sm:col-span-1")}>
+          <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--faint)]">
+            {t("admin.usersMessagesTotal")}
+          </p>
+          <p className="mt-1 font-mono text-[18px] font-semibold">{stats.totalMessages.toLocaleString()}</p>
+        </div>
+      </div>
+
+      {/* Filter & search toolbar */}
       <div className="flex flex-wrap items-center gap-2">
-        <Input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder={t("admin.searchUsers")}
-          className="max-w-[320px]"
-        />
+        <div className="relative min-w-[220px] max-w-[340px] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--faint)]" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t("admin.searchUsersHint")}
+            className="pl-8"
+          />
+        </div>
         <div className="flex gap-1 rounded-[11px] border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
-          {(["all", "active", "blocked"] as const).map((value) => (
+          {(["all", "online", "active", "blocked"] as const).map((value) => (
             <button
               key={value}
               type="button"
               onClick={() => setStatus(value)}
               className={cn(
-                "h-7 rounded-[8px] px-2.5 text-[11.5px] font-medium",
-                status === value ? "bg-[var(--surface-1)] shadow-sm" : "text-[var(--muted-foreground)]",
+                "h-7 rounded-[8px] px-2.5 text-[11.5px] font-medium transition-colors",
+                status === value ? "bg-[var(--surface-1)] text-foreground shadow-sm" : "text-[var(--muted-foreground)] hover:text-foreground",
               )}
             >
-              {value === "all" ? t("admin.statusAll") : value === "active" ? t("admin.statusActive") : t("admin.statusBlocked")}
+              {value === "all"
+                ? t("admin.statusAll")
+                : value === "online"
+                  ? t("admin.filterOnline")
+                  : value === "active"
+                    ? t("admin.statusActive")
+                    : t("admin.statusBlocked")}
             </button>
           ))}
         </div>
@@ -957,35 +1615,41 @@ function UsersTab() {
         </Button>
       </div>
 
-      <div className={cn(CARD, "overflow-x-auto")}>
-        <table className="w-full min-w-[820px] border-collapse text-left text-[12px]">
-          <thead>
-            <tr className="border-b border-[var(--border)] text-[10.5px] uppercase tracking-wide text-[var(--faint)]">
-              <th className="px-3 py-2 font-medium">{t("admin.providerName")}</th>
-              <th className="px-3 py-2 font-medium">{t("admin.createdAt")}</th>
-              <th className="px-3 py-2 font-medium">{t("admin.lastSeen")}</th>
-              <th className="px-3 py-2 font-medium">{t("admin.tokens")}</th>
-              <th className="px-3 py-2 font-medium">{t("admin.requests")}</th>
-              <th className="px-3 py-2 font-medium">{t("admin.daily")}</th>
-              <th className="px-3 py-2 font-medium">{t("admin.monthly")}</th>
-              <th className="px-3 py-2 font-medium">{t("common.status")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((user) => (
-              <UserRow key={user.id} user={user} onUpdate={(patch) => void update(user, patch)} />
-            ))}
-          </tbody>
-        </table>
-        {filtered.length === 0 ? (
-          <p className="p-4 text-[12px] text-[var(--muted-foreground)]">{t("common.none")}</p>
-        ) : null}
-      </div>
+      {/* User cards list */}
+      {filtered.length === 0 ? (
+        <div className={cn(CARD, "p-5 text-center text-[12px] text-[var(--muted-foreground)]")}>
+          {t("common.none")}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2.5">
+          {filtered.map((user) => (
+            <UserActivityCard
+              key={user.id}
+              user={user}
+              expanded={expandedUserId === user.id}
+              onToggleExpand={() =>
+                setExpandedUserId((cur) => (cur === user.id ? null : user.id))
+              }
+              onUpdate={(patch) => void update(user, patch)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function UserRow({ user, onUpdate }: { user: AdminUser; onUpdate: (patch: Record<string, unknown>) => void }) {
+function UserActivityCard({
+  user,
+  expanded,
+  onToggleExpand,
+  onUpdate,
+}: {
+  user: AdminUser;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onUpdate: (patch: Record<string, unknown>) => void;
+}) {
   const t = useAdminT();
   const [daily, setDaily] = React.useState(user.daily_token_limit?.toString() ?? "");
   const [monthly, setMonthly] = React.useState(user.monthly_token_limit?.toString() ?? "");
@@ -995,6 +1659,11 @@ function UserRow({ user, onUpdate }: { user: AdminUser; onUpdate: (patch: Record
     setMonthly(user.monthly_token_limit?.toString() ?? "");
   }, [user.daily_token_limit, user.monthly_token_limit]);
 
+  const presence = computePresence(user, t);
+  const messagesSent = user.messagesSent ?? user.requests ?? 0;
+  const modelsUsed = user.modelsUsed ?? [];
+  const isBlocked = user.status === "blocked";
+
   const saveLimits = () => {
     onUpdate({
       dailyTokenLimit: daily.trim() === "" ? null : Number(daily),
@@ -1003,42 +1672,210 @@ function UserRow({ user, onUpdate }: { user: AdminUser; onUpdate: (patch: Record
   };
 
   return (
-    <tr className="border-b border-[var(--border)]/60 last:border-0">
-      <td className="px-3 py-2.5">
-        <p className="truncate font-medium">{user.display_name || user.email.split("@")[0]}</p>
-        <p className="truncate text-[10.5px] text-[var(--faint)]">{user.email}</p>
-        {user.role === "admin" ? <Badge variant="primary" className="mt-1">{t("auth.admin")}</Badge> : null}
-      </td>
-      <td className="px-3 py-2.5 text-[11px] text-[var(--muted-foreground)]">{dateLabel(user.created_at)}</td>
-      <td className="px-3 py-2.5 text-[11px] text-[var(--muted-foreground)]">{dateLabel(user.last_seen_at)}</td>
-      <td className="px-3 py-2.5 font-mono text-[11px]">{formatTokens(user.totalTokens)}</td>
-      <td className="px-3 py-2.5 font-mono text-[11px]">{user.requests}</td>
-      <td className="px-3 py-2.5">
-        <Input value={daily} onChange={(event) => setDaily(event.target.value.replace(/[^\d]/g, ""))} className="h-7 w-[92px] text-[11px]" inputMode="numeric" />
-      </td>
-      <td className="px-3 py-2.5">
-        <div className="flex items-center gap-1">
-          <Input value={monthly} onChange={(event) => setMonthly(event.target.value.replace(/[^\d]/g, ""))} className="h-7 w-[92px] text-[11px]" inputMode="numeric" />
-          <Button size="xs" variant="ghost" onClick={saveLimits}>
-            {t("admin.saveLimits")}
-          </Button>
+    <article
+      className={cn(
+        CARD,
+        "overflow-hidden transition-colors",
+        isBlocked && "border-[var(--destructive)]/40 bg-[var(--destructive)]/[0.04]",
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-3 p-3.5">
+        {/* Identity */}
+        <div className="min-w-[180px] flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="truncate text-[13.5px] font-semibold">
+              {user.display_name || user.email.split("@")[0]}
+            </p>
+            {user.role === "admin" ? (
+              <Badge variant="primary" className="text-[10px]">
+                {t("auth.admin")}
+              </Badge>
+            ) : null}
+            {isBlocked ? (
+              <Badge
+                variant="unknown"
+                className="border-[var(--destructive)]/45 bg-[var(--destructive)]/14 text-[10px] text-[var(--destructive)]"
+              >
+                <Ban className="size-2.5" />
+                {t("admin.statusBlocked")}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="truncate text-[11px] text-[var(--faint)]">
+            {user.email} · {t("admin.createdAt")}: {dateLabel(user.created_at)}
+          </p>
         </div>
-      </td>
-      <td className="px-3 py-2.5">
+
+        {/* Presence & Offline Duration */}
+        <div
+          title={user.last_seen_at ? dateTimeLabel(user.last_seen_at) : t("admin.neverOnline")}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+            presence.kind === "online" &&
+              "border-[var(--success)]/45 bg-[var(--success)]/12 text-[var(--success)]",
+            presence.kind === "recent" &&
+              "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-foreground",
+            presence.kind === "offline" &&
+              "border-[var(--warning)]/40 bg-[var(--warning)]/12 text-[var(--warning)]",
+            presence.kind === "long-offline" &&
+              "border-[var(--destructive)]/40 bg-[var(--destructive)]/12 text-[var(--destructive)]",
+            presence.kind === "never" &&
+              "border-[var(--border)] bg-[var(--surface-2)] text-[var(--faint)]",
+          )}
+        >
+          {presence.kind === "online" ? (
+            <span className="size-2 animate-pulse rounded-full bg-[var(--success)]" />
+          ) : (
+            <Clock className="size-3" />
+          )}
+          <span>{presence.label}</span>
+        </div>
+
+        {/* Messages & Tokens */}
+        <div className="flex items-center gap-3 text-[11.5px]">
+          <div className="flex items-center gap-1.5 rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1">
+            <MessageSquare className="size-3.5 text-[var(--primary)]" />
+            <span className="font-mono font-semibold tabular-nums">{messagesSent.toLocaleString()}</span>
+            <span className="text-[10.5px] text-[var(--muted-foreground)]">{t("admin.messages")}</span>
+          </div>
+          <div className="hidden items-center gap-1 rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1 font-mono text-[11px] text-[var(--muted-foreground)] sm:flex">
+            {formatTokens(user.totalTokens)}
+          </div>
+        </div>
+
+        {/* Actions: Block / Unblock + Expand */}
         <div className="flex items-center gap-1.5">
-          <Badge variant={user.status === "active" ? "primary" : "unknown"}>
-            {user.status === "active" ? t("admin.statusActive") : t("admin.statusBlocked")}
-          </Badge>
           <Button
             size="xs"
-            variant="ghost"
-            onClick={() => onUpdate({ status: user.status === "active" ? "blocked" : "active" })}
+            variant={isBlocked ? "secondary" : "ghost"}
+            onClick={() => onUpdate({ status: isBlocked ? "active" : "blocked" })}
+            className={cn(
+              isBlocked
+                ? "border-[var(--success)]/40 text-[var(--success)] hover:bg-[var(--success)]/12"
+                : "text-[var(--destructive)] hover:bg-[var(--destructive)]/12 hover:text-[var(--destructive)]",
+            )}
           >
-            {user.status === "active" ? t("admin.block") : t("admin.unblock")}
+            {isBlocked ? <ShieldCheck className="size-3.5" /> : <Ban className="size-3.5" />}
+            {isBlocked ? t("admin.unblock") : t("admin.block")}
+          </Button>
+          <Button size="xs" variant="ghost" onClick={onToggleExpand} aria-expanded={expanded}>
+            {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+            {t("admin.details")}
           </Button>
         </div>
-      </td>
-    </tr>
+      </div>
+
+      {/* Inline preview of models used */}
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-[var(--border)]/60 bg-[var(--surface-2)]/40 px-3.5 py-2">
+        <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-[var(--muted-foreground)]">
+          <Cpu className="size-3" />
+          {t("admin.modelsUsed")}:
+        </span>
+        {modelsUsed.length === 0 ? (
+          <span className="text-[11px] text-[var(--faint)]">{t("admin.noModelsUsed")}</span>
+        ) : (
+          modelsUsed.slice(0, expanded ? modelsUsed.length : 4).map((entry) => (
+            <span
+              key={`${entry.source}-${entry.model}`}
+              title={`${entry.provider} · ${formatTokens(entry.tokens)} · ${dateTimeLabel(entry.lastUsedAt)}`}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px]",
+                entry.source === "admin"
+                  ? "border-[var(--primary)]/35 bg-[var(--primary)]/10 text-foreground"
+                  : "border-[var(--border)] bg-[var(--surface-1)] text-[var(--muted-foreground)]",
+              )}
+            >
+              {entry.source === "admin" ? (
+                <Server className="size-2.5 text-[var(--primary)]" />
+              ) : (
+                <Sparkles className="size-2.5 text-[var(--faint)]" />
+              )}
+              <span className="max-w-[160px] truncate font-medium">{entry.model}</span>
+              <span className="font-mono text-[10px] opacity-80">· {entry.messages}</span>
+            </span>
+          ))
+        )}
+        {!expanded && modelsUsed.length > 4 ? (
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            className="text-[10.5px] font-medium text-[var(--primary)] hover:underline"
+          >
+            +{modelsUsed.length - 4}
+          </button>
+        ) : null}
+      </div>
+
+      {/* Expanded full breakdown & token limits */}
+      {expanded ? (
+        <div className="grid gap-4 border-t border-[var(--border)] bg-[var(--surface-1)]/60 p-3.5 lg:grid-cols-2">
+          <div>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--faint)]">
+              {t("admin.modelsUsed")}
+            </p>
+            {modelsUsed.length === 0 ? (
+              <p className="text-[11.5px] text-[var(--muted-foreground)]">{t("admin.noModelsUsed")}</p>
+            ) : (
+              <ul className="flex flex-col gap-1.5">
+                {modelsUsed.map((entry) => (
+                  <li
+                    key={`detail-${entry.source}-${entry.model}`}
+                    className="flex items-center justify-between gap-2 rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[11.5px]"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{entry.model}</p>
+                      <p className="text-[10px] text-[var(--faint)]">
+                        {entry.source === "admin" ? t("admin.sourceAdmin") : t("admin.sourceDefault")}
+                        {" · "}
+                        {entry.provider}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right font-mono text-[10.5px]">
+                      <p className="font-semibold text-foreground">
+                        {t("admin.msgsShort", { n: entry.messages })}
+                      </p>
+                      <p className="text-[var(--faint)]">{formatTokens(entry.tokens)}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2.5">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--faint)]">
+              {t("admin.daily")} / {t("admin.monthly")}
+            </p>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10.5px] text-[var(--muted-foreground)]">{t("admin.daily")}</Label>
+                <Input
+                  value={daily}
+                  onChange={(event) => setDaily(event.target.value.replace(/[^\d]/g, ""))}
+                  className="h-8 w-[120px] text-[11.5px]"
+                  inputMode="numeric"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label className="text-[10.5px] text-[var(--muted-foreground)]">{t("admin.monthly")}</Label>
+                <Input
+                  value={monthly}
+                  onChange={(event) => setMonthly(event.target.value.replace(/[^\d]/g, ""))}
+                  className="h-8 w-[120px] text-[11.5px]"
+                  inputMode="numeric"
+                />
+              </div>
+              <Button size="xs" variant="secondary" onClick={saveLimits} className="h-8">
+                {t("admin.saveLimits")}
+              </Button>
+            </div>
+            <p className="text-[10.5px] text-[var(--faint)]">
+              {t("admin.lastSeen")}: {user.last_seen_at ? dateTimeLabel(user.last_seen_at) : t("admin.neverOnline")}
+            </p>
+          </div>
+        </div>
+      ) : null}
+    </article>
   );
 }
 

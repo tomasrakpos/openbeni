@@ -101,11 +101,6 @@ export function UnlockGate() {
             {busy ? t("settings.unlocking") : t("settings.unlock")}
           </Button>
         </form>
-
-        <p className="mt-4 flex items-start gap-1.5 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/50 px-2.5 py-2 text-[10px] leading-relaxed text-[var(--faint)]">
-          <ShieldCheck className="mt-0.5 size-3 shrink-0 text-[var(--success)]" />
-          {t("settings.keyStorage")}
-        </p>
       </div>
     </div>
   );

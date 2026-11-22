@@ -11,19 +11,35 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Box, Check, ChevronDown, ChevronRight, Clock, Eye, EyeOff, Info, KeyRound, Link2, Monitor, Plus, X, Zap } from "lucide-react";
+import { AlertTriangle, Box, Check, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Eye, EyeOff, Info, KeyRound, Link2, Monitor, Plus, ShieldAlert, X, Zap } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { GlowButton } from "@/components/ui/glow-button";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import type { KeyHealthReport, ModelTier, ProviderInspectSummary } from "@/lib/providerInspectClient";
 
 export type ApiFormat = "auto" | "openai" | "anthropic" | "gemini";
 export type ProviderPreset = { id: string; name: string; baseUrl: string; color: string; format?: ApiFormat; local?: boolean; icon?: string };
 export type ProviderDraft = { presetId: string | null; name: string; baseUrl: string; apiKey: string; format: ApiFormat; timeout: number };
+export type DetectedModelItem = {
+  id: string;
+  displayName?: string;
+  tier?: ModelTier;
+  tierSource?: string;
+  contextWindow?: number;
+  capabilities?: string[];
+};
+export type DetectModelsOutput =
+  | DetectedModelItem[]
+  | {
+      models: DetectedModelItem[];
+      keyHealth?: KeyHealthReport;
+      summary?: ProviderInspectSummary;
+    };
 export type ProviderWizardProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (p: ProviderDraft & { models: string[] }) => void | Promise<void>;
-  onDetectModels?: (p: ProviderDraft) => Promise<{ id: string }[]>;
+  onDetectModels?: (p: ProviderDraft) => Promise<DetectModelsOutput>;
   presets?: ProviderPreset[];
   docsUrl?: string;
   /** Optional values used when editing an existing provider. */
@@ -55,8 +71,15 @@ const T = {
     detect: "تشخیص خودکار", detectSub: "با بررسی آدرس مدل‌ها، فرمت درست خودکار انتخاب می‌شود.",
     name: "اسم نمایشی", namePh: "مثلاً OpenAI", timeout: "زمان انتظار (ثانیه)", url: "آدرس پایه", key: "کلید API", keyPh: "sk-...", fmt: "فرمت API",
     auto: "تشخیص خودکار", fmtHint: "فرمت از خود پرووایدر تشخیص داده می‌شود.",
-    models: "مدل‌ها", loading: "در حال گرفتن لیست مدل‌ها…", none: "مدلی پیدا نشد. اسم مدل را دستی اضافه کنید.", retry: "تلاش دوباره",
+    models: "مدل‌ها", loading: "در حال بررسی سلامت کلید و شناسایی مدل‌های رایگان و پولی…", none: "مدلی پیدا نشد. اسم مدل را دستی اضافه کنید.", retry: "تلاش دوباره",
     addModel: "افزودن مدل", modelPh: "اسم مدل", review: "بررسی نهایی", count: "مدل فعال",
+    filterAll: "همه", filterFree: "رایگان", filterPaid: "پولی", filterUnknown: "نامشخص",
+    freeBadge: "رایگان", paidBadge: "پولی", searchModels: "جستجوی مدل…",
+    selectFreeOnly: "فقط رایگان‌ها", selectAll: "انتخاب همه",
+    keyHealthTitle: "وضعیت کلید API",
+    khHealthy: "کلید سالم و آماده است", khFreeOnly: "فقط مدل‌های رایگان قابل استفاده‌اند",
+    khRateLimited: "کلید معتبر است (محدودیت نرخ موقت)", khInvalid: "کلید رد شد (نامعتبر)",
+    khNoBalance: "کلید معتبر است اما اعتبار حساب تمام شده", khForbidden: "دسترسی کلید مجاز نیست", khUnreachable: "پرووایدر پاسخ نداد",
     cancel: "انصراف", back: "بازگشت", next: "ادامه", save: "افزودن پرووایدر", close: "بستن", show: "نمایش کلید", hide: "پنهان کردن کلید",
     help: "کمک می‌خواهید؟", helpSub: "مستندات را ببینید", step: (n: number) => `مرحله ${n} از ۴`,
     eName: "اسم را بنویسید.", eUrl: "آدرس معتبر نیست. با https:// شروع کنید.", eKey: "کلید را وارد کنید.", eSave: "افزودن انجام نشد.",
@@ -69,8 +92,15 @@ const T = {
     detect: "Auto-detect", detectSub: "It probes the models endpoint and picks the right format for you.",
     name: "Display name", namePh: "e.g. OpenAI", timeout: "Timeout (seconds)", url: "Base URL", key: "API key", keyPh: "sk-...", fmt: "API format",
     auto: "Auto-detect", fmtHint: "The format is detected from the provider.",
-    models: "Models", loading: "Fetching the model list…", none: "No models found. Add a model name by hand.", retry: "Try again",
+    models: "Models", loading: "Verifying API key health & scanning Free vs Paid models…", none: "No models found. Add a model name by hand.", retry: "Try again",
     addModel: "Add model", modelPh: "Model name", review: "Final check", count: "models enabled",
+    filterAll: "All", filterFree: "Free", filterPaid: "Paid", filterUnknown: "Unclassified",
+    freeBadge: "Free", paidBadge: "Paid", searchModels: "Filter models…",
+    selectFreeOnly: "Free only", selectAll: "Select all",
+    keyHealthTitle: "API key health",
+    khHealthy: "API key verified & healthy", khFreeOnly: "Key works on free models only (no paid balance)",
+    khRateLimited: "Key verified (temporarily rate-limited)", khInvalid: "API key rejected (401)",
+    khNoBalance: "Key recognized, but account has no balance", khForbidden: "API key forbidden (403)", khUnreachable: "Provider unreachable",
     cancel: "Cancel", back: "Back", next: "Continue", save: "Add provider", close: "Close", show: "Show key", hide: "Hide key",
     help: "Need help?", helpSub: "Check the documentation", step: (n: number) => `Step ${n} of 4`,
     eName: "Enter a name.", eUrl: "That URL is not valid. Start with https://", eKey: "Enter the key.", eSave: "Could not add the provider.",
@@ -141,8 +171,28 @@ const CSS = `
 .apw-ic.nopt{pointer-events:none}
 .apw-hint{display:flex;align-items:center;gap:7px;margin:8px 2px 0;font-size:12.5px;color:var(--muted-foreground)}
 .apw-err{margin:4px 2px 0;font-size:12.5px;color:var(--destructive,#ef4444)}
-.apw-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;font-size:14px}.apw-row:hover{background:color-mix(in oklab,var(--foreground) 5%,transparent)}
-.apw-row input{accent-color:var(--primary);width:17px;height:17px}.apw-row span{direction:ltr;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+.apw-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:12px;font-size:14px}.apw-row:hover{background:color-mix(in oklab,var(--foreground) 5%,transparent)}
+.apw-row input{accent-color:var(--primary);width:17px;height:17px;flex:none}.apw-row .apw-mid{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+.apw-tier{flex:none;display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:10.5px;font-weight:600;letter-spacing:.01em}
+.apw-tier.free{color:#10b981;background:color-mix(in oklab,#10b981 14%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,#10b981 30%,transparent)}
+.apw-tier.paid{color:#f59e0b;background:color-mix(in oklab,#f59e0b 14%,transparent);box-shadow:inset 0 0 0 1px color-mix(in oklab,#f59e0b 32%,transparent)}
+.apw-health{display:flex;align-items:flex-start;gap:11px;padding:12px 14px;border-radius:14px;margin-bottom:12px;border:1px solid var(--border)}
+.apw-health.ok{border-color:color-mix(in oklab,#10b981 38%,transparent);background:color-mix(in oklab,#10b981 10%,transparent)}
+.apw-health.warn{border-color:color-mix(in oklab,#f59e0b 40%,transparent);background:color-mix(in oklab,#f59e0b 10%,transparent)}
+.apw-health.bad{border-color:color-mix(in oklab,#ef4444 42%,transparent);background:color-mix(in oklab,#ef4444 10%,transparent)}
+.apw-health-ic{flex:none;margin-top:2px}
+.apw-health.ok .apw-health-ic{color:#10b981}.apw-health.warn .apw-health-ic{color:#f59e0b}.apw-health.bad .apw-health-ic{color:#ef4444}
+.apw-health-body{flex:1;min-width:0}
+.apw-health-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px;font-weight:600;color:var(--foreground)}
+.apw-health-ms{font:11px ui-monospace,Menlo,monospace;color:var(--muted-foreground);padding:1px 7px;border-radius:99px;background:color-mix(in oklab,var(--foreground) 7%,transparent)}
+.apw-health-msg{margin:3px 0 0;font-size:12px;line-height:1.55;color:var(--muted-foreground)}
+.apw-pills{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:10px}
+.apw-pill{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:99px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:color-mix(in oklab,var(--foreground) 3%,transparent);color:var(--muted-foreground);transition:all .15s}
+.apw-pill:hover{color:var(--foreground);background:color-mix(in oklab,var(--foreground) 7%,transparent)}
+.apw-pill.on{color:var(--foreground);border-color:color-mix(in oklab,var(--primary) 60%,transparent);background:color-mix(in oklab,var(--primary) 13%,transparent)}
+.apw-pill b{font-variant-numeric:tabular-nums;font-weight:600}
+.apw-pill-act{margin-inline-start:auto;display:inline-flex;gap:6px}
+.apw-list{max-height:240px;overflow-y:auto;padding-inline-end:4px;border:1px solid var(--border);border-radius:14px;padding:6px;background:color-mix(in oklab,var(--foreground) 2%,transparent)}
 .apw-add{display:flex;gap:8px;margin-top:12px}.apw-add .apw-in{height:44px}
 .apw-sum{border:1px solid var(--border);border-radius:16px;overflow:hidden}.apw-sum div{display:flex;justify-content:space-between;gap:16px;padding:12px 16px;font-size:14px}.apw-sum div+div{border-top:1px solid var(--border)}
 .apw-sum span{color:var(--muted-foreground)}.apw-sum b{font-weight:500;direction:ltr;text-align:end;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -225,8 +275,13 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
   const [d, setD] = useState({ name: "", baseUrl: "", apiKey: "", format: "auto" as ApiFormat, timeout: 45 });
   const [show, setShow] = useState(false);
   const [errs, setErrs] = useState({} as Record<string, string>);
-  const [models, setModels] = useState([] as { id: string; on: boolean }[]);
+  const [models, setModels] = useState([] as { id: string; on: boolean; tier?: ModelTier }[]);
   const [mState, setMState] = useState("idle" as "idle" | "loading" | "error");
+  const [mError, setMError] = useState("");
+  const [keyHealth, setKeyHealth] = useState<KeyHealthReport | null>(null);
+  const [inspectSummary, setInspectSummary] = useState<ProviderInspectSummary | null>(null);
+  const [tierFilter, setTierFilter] = useState<"all" | "free" | "paid">("all");
+  const [modelSearch, setModelSearch] = useState("");
   const [manual, setManual] = useState("");
   const [busy, setBusy] = useState(false);
   const [saveErr, setSaveErr] = useState("");
@@ -239,7 +294,9 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
     if (open) return;
     const id = window.setTimeout(() => {
       setStep(0); setSel(null); setD({ name: "", baseUrl: "", apiKey: "", format: "auto", timeout: 45 });
-      setShow(false); setErrs({}); setModels([]); setMState("idle"); setManual(""); setSaveErr(""); detected.current = false;
+      setShow(false); setErrs({}); setModels([]); setMState("idle"); setMError("");
+      setKeyHealth(null); setInspectSummary(null); setTierFilter("all"); setModelSearch("");
+      setManual(""); setSaveErr(""); detected.current = false;
     }, 250);
     return () => clearTimeout(id);
   }, [open]);
@@ -256,7 +313,9 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
       timeout: initialDraft.timeout ?? 45,
     });
     setModels((initialModels ?? []).map((id) => ({ id, on: true })));
-    setShow(false); setErrs({}); setMState("idle"); setManual(""); setSaveErr(""); detected.current = false;
+    setShow(false); setErrs({}); setMState("idle"); setMError("");
+    setKeyHealth(null); setInspectSummary(null); setTierFilter("all"); setModelSearch("");
+    setManual(""); setSaveErr(""); detected.current = false;
   }, [open, initialDraft, initialModels, initialStep]);
 
   const choose = (id: string) => {
@@ -269,11 +328,30 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
   const runDetect = async () => {
     if (!onDetectModels) return;
     setMState("loading");
+    setMError("");
+    setKeyHealth(null);
+    setInspectSummary(null);
+    setTierFilter("all");
+    setModelSearch("");
     try {
-      const list = await onDetectModels(draft);
-      setModels(list.map((m) => ({ id: m.id, on: true })));
+      const output = await onDetectModels(draft);
+      const list = Array.isArray(output) ? output : output.models;
+      const health = Array.isArray(output) ? null : (output.keyHealth ?? null);
+      const summary = Array.isArray(output) ? null : (output.summary ?? null);
+      setKeyHealth(health);
+      setInspectSummary(summary);
+      // If key only works on free models (0 paid balance), pre-select free models automatically!
+      const autoFreeOnly = health?.status === "free_only" && list.some((m) => m.tier === "free");
+      setModels(
+        list.map((m) => ({
+          id: m.id,
+          tier: m.tier,
+          on: autoFreeOnly ? m.tier === "free" : true,
+        })),
+      );
       setMState("idle");
-    } catch {
+    } catch (e) {
+      setMError(e instanceof Error && e.message ? e.message : t.eSave);
       setMState("error");
     }
   };
@@ -337,7 +415,7 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent hideClose dir={fa ? "rtl" : "ltr"} style={FRAME} className="flex flex-col gap-0 overflow-hidden p-0 sm:w-[min(980px,calc(100vw-2rem))] sm:max-w-none sm:rounded-[28px] rounded-t-[24px]">
+      <DialogContent hideClose rise dir="ltr" style={FRAME} className="flex flex-col gap-0 overflow-hidden p-0 sm:w-[min(980px,calc(100vw-2rem))] sm:max-w-none sm:rounded-[28px] rounded-t-[24px]">
         <style>{CSS}</style>
         <div className="apw-head">
           <span className="apw-pr">PR</span>
@@ -387,7 +465,7 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
                   {presets.map((p) => (
                     <button type="button" key={p.id} className="apw-card" aria-pressed={sel === p.id} onClick={() => choose(p.id)}>
                       <span className="apw-tilewrap" style={{ borderRadius: Math.round(iconSize * 0.3) }}>
-                        <ProviderIcon icon={p.icon ?? p.id} name={p.name} color={p.color} baseUrl={p.baseUrl} size={iconSize} />
+                        <ProviderIcon icon={p.icon ?? p.id} name={p.name} color={p.color} baseUrl={p.baseUrl} size={iconSize} water />
                         <span className="apw-water" aria-hidden />
                       </span>
                       <span className="apw-meta"><span className="apw-name">{p.name}</span><span className="apw-host" title={p.baseUrl}>{hostOf(p.baseUrl)}</span></span>
@@ -396,7 +474,7 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
                   ))}
                   <button type="button" className="apw-card dash" aria-pressed={sel === "custom"} onClick={() => choose("custom")}>
                     <span className="apw-tilewrap" style={{ borderRadius: Math.round(iconSize * 0.3) }}>
-                      <ProviderIcon icon="custom" name={t.custom} color="#8b7bff" size={iconSize} />
+                      <ProviderIcon icon="custom" name={t.custom} color="#8b7bff" size={iconSize} water />
                       <span className="apw-water" aria-hidden />
                     </span>
                     <span className="apw-meta"><span className="apw-name">{t.custom}</span><span className="apw-host">{t.customSub}</span></span>
@@ -428,23 +506,146 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
               </>
             )}
 
-            {step === 2 && (
-              <>
-                <h3 className="apw-h">{t.models}</h3>
-                <p className="apw-p">{mState === "loading" ? t.loading : mState === "error" ? t.eSave : models.length ? `${models.filter((m) => m.on).length} ${t.count}` : t.none}</p>
-                {mState === "error" && <GlowButton variant="secondary" size="sm" onClick={() => void runDetect()}>{t.retry}</GlowButton>}
-                {models.map((m) => (
-                  <label key={m.id} className="apw-row">
-                    <input type="checkbox" checked={m.on} onChange={() => setModels(models.map((x) => (x.id === m.id ? { ...x, on: !x.on } : x)))} />
-                    <span>{m.id}</span>
-                  </label>
-                ))}
-                <div className="apw-add">
-                  <input className="apw-in ltr" value={manual} placeholder={t.modelPh} onChange={(e) => setManual(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addManual())} />
-                  <GlowButton variant="secondary" onClick={addManual}>{t.addModel}</GlowButton>
-                </div>
-              </>
-            )}
+            {step === 2 && (() => {
+              const freeCount = inspectSummary?.freeCount ?? models.filter((m) => m.tier === "free").length;
+              const paidCount = inspectSummary?.paidCount ?? models.filter((m) => m.tier === "paid").length;
+              const q = modelSearch.trim().toLowerCase();
+              const visibleModels = models.filter((m) => {
+                if (tierFilter === "free" && m.tier !== "free") return false;
+                if (tierFilter === "paid" && m.tier !== "paid") return false;
+                if (q && !m.id.toLowerCase().includes(q)) return false;
+                return true;
+              });
+              const khTone = keyHealth
+                ? keyHealth.status === "healthy"
+                  ? "ok"
+                  : keyHealth.status === "free_only" || keyHealth.status === "rate_limited"
+                    ? "warn"
+                    : "bad"
+                : null;
+              const khLabel = keyHealth
+                ? ({
+                    healthy: t.khHealthy,
+                    free_only: t.khFreeOnly,
+                    rate_limited: t.khRateLimited,
+                    invalid_key: t.khInvalid,
+                    insufficient_balance: t.khNoBalance,
+                    forbidden: t.khForbidden,
+                    unreachable: t.khUnreachable,
+                    model_error: t.khUnreachable,
+                    no_key: t.khInvalid,
+                  } as const)[keyHealth.status]
+                : "";
+              return (
+                <>
+                  <h3 className="apw-h">{t.models}</h3>
+                  <p className="apw-p">
+                    {mState === "loading"
+                      ? t.loading
+                      : mState === "error"
+                        ? (mError || t.eSave)
+                        : models.length
+                          ? `${models.filter((m) => m.on).length} ${t.count}`
+                          : t.none}
+                  </p>
+
+                  {keyHealth && khTone && (
+                    <div className={`apw-health ${khTone}`} role="status">
+                      <span className="apw-health-ic">
+                        {khTone === "ok" ? <CheckCircle2 size={18} /> : khTone === "warn" ? <AlertTriangle size={18} /> : <ShieldAlert size={18} />}
+                      </span>
+                      <div className="apw-health-body">
+                        <div className="apw-health-head">
+                          <span>{khLabel}</span>
+                          {keyHealth.latencyMs != null && <span className="apw-health-ms">{keyHealth.latencyMs}ms</span>}
+                        </div>
+                        <p className="apw-health-msg">{keyHealth.message}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {mState === "error" && (
+                    <GlowButton variant="secondary" size="sm" onClick={() => void runDetect()}>{t.retry}</GlowButton>
+                  )}
+
+                  {models.length > 0 && (
+                    <>
+                      <div className="apw-pills">
+                        <button type="button" className={"apw-pill" + (tierFilter === "all" ? " on" : "")} onClick={() => setTierFilter("all")}>
+                          {t.filterAll} <b>{models.length}</b>
+                        </button>
+                        {freeCount > 0 && (
+                          <button type="button" className={"apw-pill" + (tierFilter === "free" ? " on" : "")} onClick={() => setTierFilter("free")}>
+                            {t.filterFree} <b style={{ color: "#10b981" }}>{freeCount}</b>
+                          </button>
+                        )}
+                        {paidCount > 0 && (
+                          <button type="button" className={"apw-pill" + (tierFilter === "paid" ? " on" : "")} onClick={() => setTierFilter("paid")}>
+                            <Coins size={12} style={{ color: "#f59e0b" }} />
+                            {t.filterPaid} <b style={{ color: "#f59e0b" }}>{paidCount}</b>
+                          </button>
+                        )}
+                        <span className="apw-pill-act">
+                          {freeCount > 0 && paidCount > 0 && (
+                            <button
+                              type="button"
+                              className="apw-pill"
+                              onClick={() => setModels((list) => list.map((m) => ({ ...m, on: m.tier === "free" })))}
+                            >
+                              {t.selectFreeOnly}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="apw-pill"
+                            onClick={() => setModels((list) => list.map((m) => ({ ...m, on: true })))}
+                          >
+                            {t.selectAll}
+                          </button>
+                        </span>
+                      </div>
+
+                      {models.length > 10 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <input
+                            className="apw-in"
+                            style={{ height: 38, fontSize: 13 }}
+                            value={modelSearch}
+                            placeholder={t.searchModels}
+                            onChange={(e) => setModelSearch(e.target.value)}
+                          />
+                        </div>
+                      )}
+
+                      <div className="apw-list">
+                        {visibleModels.map((m) => (
+                          <label key={m.id} className="apw-row">
+                            <input
+                              type="checkbox"
+                              checked={m.on}
+                              onChange={() => setModels(models.map((x) => (x.id === m.id ? { ...x, on: !x.on } : x)))}
+                            />
+                            <span className="apw-mid" title={m.id}>{m.id}</span>
+                            {m.tier === "free" && <span className="apw-tier free">{t.freeBadge}</span>}
+                            {m.tier === "paid" && (
+                              <span className="apw-tier paid">
+                                <Coins size={10} />
+                                {t.paidBadge}
+                              </span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  <div className="apw-add">
+                    <input className="apw-in ltr" value={manual} placeholder={t.modelPh} onChange={(e) => setManual(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addManual())} />
+                    <GlowButton variant="secondary" onClick={addManual}>{t.addModel}</GlowButton>
+                  </div>
+                </>
+              );
+            })()}
 
             {step === 3 && (
               <>
@@ -456,7 +657,34 @@ export function ProviderWizard({ open, onOpenChange, onSubmit, onDetectModels, p
                   <div><span>{t.fmt}</span><b>{d.format === "auto" ? t.auto : d.format}</b></div>
                   <div><span>{t.timeout}</span><b>{d.timeout}</b></div>
                   <div><span>{t.key}</span><b>{draft.apiKey ? "••••••••" : "-"}</b></div>
-                  <div><span>{t.models}</span><b>{models.filter((m) => m.on).length}</b></div>
+                  {keyHealth && (
+                    <div>
+                      <span>{t.keyHealthTitle}</span>
+                      <b style={{ color: keyHealth.status === "healthy" ? "#10b981" : keyHealth.status === "free_only" || keyHealth.status === "rate_limited" ? "#f59e0b" : "#ef4444" }}>
+                        {({
+                          healthy: t.khHealthy,
+                          free_only: t.khFreeOnly,
+                          rate_limited: t.khRateLimited,
+                          invalid_key: t.khInvalid,
+                          insufficient_balance: t.khNoBalance,
+                          forbidden: t.khForbidden,
+                          unreachable: t.khUnreachable,
+                          model_error: t.khUnreachable,
+                          no_key: t.khInvalid,
+                        } as const)[keyHealth.status]}
+                        {keyHealth.latencyMs != null ? ` · ${keyHealth.latencyMs}ms` : ""}
+                      </b>
+                    </div>
+                  )}
+                  <div>
+                    <span>{t.models}</span>
+                    <b>
+                      {models.filter((m) => m.on).length}
+                      {inspectSummary && (inspectSummary.freeCount > 0 || inspectSummary.paidCount > 0)
+                        ? ` (${inspectSummary.freeCount} ${t.filterFree} · ${inspectSummary.paidCount} ${t.filterPaid})`
+                        : ""}
+                    </b>
+                  </div>
                 </div>
                 {saveErr ? <p className="apw-err" role="alert" style={{ marginTop: 12 }}>{saveErr}</p> : null}
               </>

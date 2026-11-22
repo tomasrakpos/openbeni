@@ -6,12 +6,15 @@ import { adminEmails, eq, sbJson, supabaseConfigured, verifyAccessToken, type Su
 export type Role = "user" | "admin";
 export type Status = "active" | "blocked";
 
+export const DEFAULT_SIGNUP_CREDITS = 5;
+
 export interface ProfileRow {
   id: string;
   email: string;
   display_name: string | null;
   role: Role;
   status: Status;
+  credits?: number | null;
   daily_token_limit: number | null;
   monthly_token_limit: number | null;
   created_at: string;
@@ -21,6 +24,7 @@ export interface ProfileRow {
 export interface AppSettingsRow {
   id: boolean;
   signup_open: boolean;
+  default_signup_credits?: number | null;
   default_daily_token_limit: number | null;
   default_monthly_token_limit: number | null;
   updated_at: string;
@@ -32,6 +36,7 @@ export interface SessionProfile {
   displayName: string;
   role: Role;
   status: Status;
+  credits: number;
   dailyTokenLimit: number | null;
   monthlyTokenLimit: number | null;
   createdAt: string;
@@ -53,6 +58,7 @@ export function toSessionProfile(profile: ProfileRow, isAdmin: boolean): Session
     displayName: profile.display_name ?? profile.email.split("@")[0] ?? "User",
     role: profile.role,
     status: profile.status,
+    credits: typeof profile.credits === "number" ? profile.credits : DEFAULT_SIGNUP_CREDITS,
     dailyTokenLimit: profile.daily_token_limit,
     monthlyTokenLimit: profile.monthly_token_limit,
     createdAt: profile.created_at,
@@ -76,26 +82,53 @@ export async function resolveAuth(request: Request, env: AuthEnv): Promise<AuthC
   let profile = rows[0];
 
   if (!profile) {
-    const inserted = await sbJson<ProfileRow[]>(env, "profiles", {
-      method: "POST",
-      headers: { Prefer: "return=representation,resolution=merge-duplicates" },
-      body: JSON.stringify([
-        {
-          id: user.id,
-          email: user.email,
-          display_name: user.displayName ?? user.email.split("@")[0],
-          role: envAdmin ? "admin" : "user",
-          status: "active",
-          last_seen_at: new Date().toISOString(),
-        },
-      ]),
-    });
-    profile = inserted[0];
+    let signupCredits = DEFAULT_SIGNUP_CREDITS;
+    try {
+      const settings = await getSettings(env);
+      if (typeof settings.default_signup_credits === "number" && settings.default_signup_credits >= 0) {
+        signupCredits = settings.default_signup_credits;
+      }
+    } catch {
+      // Fall back to default 5 signup credits.
+    }
+    const baseProfile = {
+      id: user.id,
+      email: user.email,
+      display_name: user.displayName ?? user.email.split("@")[0],
+      role: envAdmin ? "admin" : "user",
+      status: "active",
+      last_seen_at: new Date().toISOString(),
+    };
+    // Use `resolution=ignore-duplicates` (ON CONFLICT DO NOTHING) so a
+    // concurrent first-request race can NEVER overwrite an existing profile or
+    // reset credits back to 5.
+    try {
+      const inserted = await sbJson<ProfileRow[]>(env, "profiles?on_conflict=id", {
+        method: "POST",
+        headers: { Prefer: "return=representation,resolution=ignore-duplicates" },
+        body: JSON.stringify([{ ...baseProfile, credits: signupCredits }]),
+      });
+      profile = inserted[0];
+    } catch {
+      // Older deployments without the `credits` column yet.
+      const inserted = await sbJson<ProfileRow[]>(env, "profiles?on_conflict=id", {
+        method: "POST",
+        headers: { Prefer: "return=representation,resolution=ignore-duplicates" },
+        body: JSON.stringify([baseProfile]),
+      });
+      profile = inserted[0];
+    }
+    if (!profile) {
+      // Another concurrent request or the auth.users trigger created the row
+      // first; re-read it without touching existing credits.
+      const existing = await sbJson<ProfileRow[]>(env, `profiles?id=${eq(user.id)}&limit=1`);
+      profile = existing[0];
+    }
   } else {
-    // Touch activity at most once every five minutes. Writing on every chat
-    // request added a full database round trip to the first token latency.
+    // Touch activity at most once every two minutes so online status in /admin
+    // stays crisp without adding DB latency to every token request.
     const lastSeen = Date.parse(profile.last_seen_at);
-    const stale = !Number.isFinite(lastSeen) || Date.now() - lastSeen > 5 * 60_000;
+    const stale = !Number.isFinite(lastSeen) || Date.now() - lastSeen > 2 * 60_000;
     const needsRole = envAdmin && profile.role !== "admin";
     if (stale || needsRole) {
       const patch: Record<string, unknown> = {};
@@ -141,6 +174,18 @@ export async function getSettings(env: AuthEnv): Promise<AppSettingsRow> {
     default_monthly_token_limit: null,
     updated_at: new Date().toISOString(),
   };
+}
+
+export async function consumeCredit(env: AuthEnv, userId: string, amount = 1): Promise<number | null> {
+  try {
+    const remaining = await sbJson<number | null>(env, "rpc/consume_user_credit", {
+      method: "POST",
+      body: JSON.stringify({ p_user: userId, p_amount: amount }),
+    });
+    return typeof remaining === "number" ? remaining : null;
+  } catch {
+    return null;
+  }
 }
 
 function authError(request: Request, env: AuthEnv, status: number, message: string): Response {

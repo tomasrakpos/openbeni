@@ -135,7 +135,11 @@ export interface AuthHeaders {
 export function authHeaders(provider: Provider, apiKey: string): AuthHeaders {
   const out: AuthHeaders = {};
   const { header, prefix } = provider.auth;
-  if (header && apiKey) out[header] = `${prefix ?? ""}${apiKey}`;
+  if (header && apiKey) {
+    const rawPrefix = prefix ?? "";
+    const sep = rawPrefix && /[A-Za-z0-9]$/.test(rawPrefix) && !/^\s/.test(apiKey) ? " " : "";
+    out[header] = `${rawPrefix}${sep}${apiKey}`;
+  }
   return out;
 }
 

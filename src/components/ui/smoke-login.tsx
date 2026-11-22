@@ -126,7 +126,7 @@ export function SmokeLogin({ onGoogleSignIn = () => wait(1400), logoSrc = "/bran
 
       {/* Right: Google only */}
       <section className="relative z-[1] flex items-center justify-center px-5 py-16 sm:px-10">
-        <div dir={fa ? "rtl" : "ltr"} className="w-full max-w-[380px] text-start">
+        <div dir="ltr" className="w-full max-w-[380px] text-start">
           <motion.h1 {...rise(0)} className={cn("text-[34px] font-semibold leading-tight", !fa && "tracking-[-0.04em]")}>
             {t.title}
           </motion.h1>
@@ -134,12 +134,7 @@ export function SmokeLogin({ onGoogleSignIn = () => wait(1400), logoSrc = "/bran
             {t.subtitle}
           </motion.p>
 
-          <motion.div {...rise(2)} className="mt-8 flex items-start gap-3 rounded-[16px] border border-[var(--line)] bg-white/[0.03] p-4">
-            <ShieldCheck className="mt-0.5 size-[18px] shrink-0 text-[var(--accent)]" />
-            <p className="text-[13px] leading-6 text-[var(--muted)]">{t.note}</p>
-          </motion.div>
-
-          <motion.div {...rise(3)} className="mt-5">
+          <motion.div {...rise(2)} className="mt-8">
             <Button
               type="button"
               onClick={google}

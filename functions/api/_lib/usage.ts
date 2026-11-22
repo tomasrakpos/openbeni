@@ -52,13 +52,22 @@ export async function usageSince(env: SupabaseEnv, userId: string, since: Date):
     return { input: Number(row?.input_tokens ?? 0), output: Number(row?.output_tokens ?? 0) };
   } catch {
     // Fallback for a deployment where the RPC has not been created yet.
+    const baseQuery = `usage_events?select=prompt_tokens,completion_tokens&user_id=${eq(userId)}&created_at=gte.${encodeURIComponent(
+      since.toISOString(),
+    )}&limit=50000`;
     try {
-      const rows = await sbJson<{ prompt_tokens: number | null; completion_tokens: number | null }[]>(
-        env,
-        `usage_events?select=prompt_tokens,completion_tokens&user_id=${eq(userId)}&created_at=gte.${encodeURIComponent(
-          since.toISOString(),
-        )}&limit=50000`,
-      );
+      let rows: { prompt_tokens: number | null; completion_tokens: number | null }[];
+      try {
+        rows = await sbJson<{ prompt_tokens: number | null; completion_tokens: number | null }[]>(
+          env,
+          `${baseQuery}&billing_source=eq.site`,
+        );
+      } catch {
+        rows = await sbJson<{ prompt_tokens: number | null; completion_tokens: number | null }[]>(
+          env,
+          baseQuery,
+        );
+      }
       return rows.reduce(
         (sum, row) => ({
           input: sum.input + Number(row.prompt_tokens ?? 0),
@@ -122,6 +131,9 @@ export interface UsageRecord {
   completion_tokens: number;
   status: string;
   latency_ms?: number;
+  billing_source?: "site" | "byok";
+  credits_charged?: number;
+  user_provider_id?: string | null;
 }
 
 export async function recordUsage(env: SupabaseEnv, record: UsageRecord): Promise<void> {
@@ -132,6 +144,22 @@ export async function recordUsage(env: SupabaseEnv, record: UsageRecord): Promis
       body: JSON.stringify([record]),
     });
   } catch {
-    // Usage accounting must never break the chat response.
+    // Fallback for deployments that have not applied 0005_user_providers.sql yet.
+    if (
+      record.billing_source !== undefined ||
+      record.credits_charged !== undefined ||
+      record.user_provider_id !== undefined
+    ) {
+      const { billing_source: _b, credits_charged: _c, user_provider_id: _u, ...legacy } = record;
+      try {
+        await sbJson(env, "usage_events", {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify([legacy]),
+        });
+      } catch {
+        // Usage accounting must never break the chat response.
+      }
+    }
   }
 }

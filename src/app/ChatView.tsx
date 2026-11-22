@@ -1,8 +1,10 @@
 // Main app view ChatView; change its view behavior here and keep shared state in sync.
 import * as React from "react";
 import { MessageList } from "@/features/chat/MessageList";
-import { ThreadComposer } from "@/features/chat/ThreadComposer";
+import { loadThreadComposer } from "@/lib/preload";
 import { activeThread, useChatsStore } from "@/stores/chats";
+
+const ThreadComposer = React.lazy(loadThreadComposer);
 
 export function ChatView() {
   const messages = useChatsStore((s) => s.messages);
@@ -53,7 +55,9 @@ export function ChatView() {
       {!empty && (
         <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
           <div className="pointer-events-auto">
-            <ThreadComposer />
+            <React.Suspense fallback={null}>
+              <ThreadComposer />
+            </React.Suspense>
           </div>
         </div>
       )}

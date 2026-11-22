@@ -11,6 +11,8 @@ import {
   FileText,
   Pencil,
   RefreshCw,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   X,
 } from "lucide-react";
@@ -18,10 +20,14 @@ import * as React from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { MenuFrame } from "@/components/ui/menu-frame";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ArtifactCard } from "@/features/chat/ArtifactCard";
 import { Markdown } from "@/features/chat/Markdown";
+import { SkillIcon } from "@/features/chat/SkillPicker";
 import { branchInfo } from "@/lib/branching";
+import { splitChatAndArtifact } from "@/lib/codefiles";
 import { localizeError } from "@/lib/errors";
 import { errorHint } from "@/lib/http";
 import { copyToClipboard } from "@/lib/export";
@@ -40,12 +46,14 @@ function IconButton({
   onClick,
   children,
   danger,
+  active,
   disabled,
 }: {
   label: string;
   onClick: () => void;
   children: React.ReactNode;
   danger?: boolean;
+  active?: "up" | "down";
   disabled?: boolean;
 }) {
   return (
@@ -56,9 +64,12 @@ function IconButton({
           onClick={onClick}
           disabled={disabled}
           aria-label={label}
+          aria-pressed={active ? true : undefined}
           className={cn(
             "inline-flex size-7 items-center justify-center rounded-[8px] text-[var(--faint)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ring)] disabled:opacity-40",
             danger && "hover:bg-[var(--destructive-soft)] hover:text-[var(--destructive)]",
+            active === "up" && "bg-[var(--success-soft)] text-[var(--success)] hover:bg-[var(--success-soft)] hover:text-[var(--success)]",
+            active === "down" && "bg-[var(--destructive-soft)] text-[var(--destructive)] hover:bg-[var(--destructive-soft)] hover:text-[var(--destructive)]",
           )}
         >
           {children}
@@ -141,6 +152,33 @@ function BranchNav({ message, compact }: { message: Message; compact?: boolean }
   );
 }
 
+const FEEDBACK_KEY = "openharness.msg.feedback";
+
+function readFeedback(messageId: string): "up" | "down" | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(FEEDBACK_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, "up" | "down">;
+    return map[messageId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFeedback(messageId: string, value: "up" | "down" | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(FEEDBACK_KEY);
+    const map: Record<string, "up" | "down"> = raw ? (JSON.parse(raw) as Record<string, "up" | "down">) : {};
+    if (value) map[messageId] = value;
+    else delete map[messageId];
+    window.localStorage.setItem(FEEDBACK_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage quota / privacy-mode errors.
+  }
+}
+
 interface MessageItemProps {
   message: Message;
   streaming: StreamingState | null;
@@ -154,16 +192,30 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
   const providers = useAllProviders();
   const models = useAllModels();
   const attachments = useChatsStore((s) => s.attachments);
+  const chatPreviewEnabled = useChatsStore(
+    (s) => s.chats.find((c) => c.id === message.chatId)?.previewEnabled === true,
+  );
   const regenerate = useChatsStore((s) => s.regenerate);
   const deleteMessage = useChatsStore((s) => s.deleteMessage);
   const editAndResend = useChatsStore((s) => s.editAndResend);
   const isStreaming = streaming?.messageId === message.id;
   const [copied, setCopied] = React.useState(false);
+  const [feedback, setFeedback] = React.useState<"up" | "down" | null>(() => readFeedback(message.id));
   const [editing, setEditing] = React.useState(false);
   const [editText, setEditText] = React.useState(message.content);
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [reasoningOpen, setReasoningOpen] = React.useState(false);
   const reduceMotion = useReducedMotion();
+
+  React.useEffect(() => {
+    setFeedback(readFeedback(message.id));
+  }, [message.id]);
+
+  const toggleFeedback = (kind: "up" | "down") => {
+    const next = feedback === kind ? null : kind;
+    setFeedback(next);
+    writeFeedback(message.id, next);
+  };
 
   const provider = providers.find((p) => p.id === message.providerId);
   // Messages store the provider-side model id, but older/imported rows may hold
@@ -178,7 +230,18 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
 
   const content = isStreaming ? streaming?.content ?? "" : message.content;
   const reasoning = isStreaming ? streaming?.reasoning ?? "" : message.reasoning ?? "";
+  const activeSkillId = isStreaming ? streaming?.skillId ?? message.skillId : message.skillId;
+  const activeSkillSources = isStreaming
+    ? streaming?.skillSourcesCount ?? message.skillSourcesCount ?? 0
+    : message.skillSourcesCount ?? 0;
   const messageAttachments = attachments.filter((a) => message.attachments.includes(a.id));
+
+  // In preview-enabled project chats (website/game/app builds), keep raw code
+  // out of the chat bubble — render clean prose + the live ArtifactCard instead.
+  const artifact = React.useMemo(() => {
+    if (message.role !== "assistant" || !chatPreviewEnabled || !content) return null;
+    return splitChatAndArtifact(content, isStreaming, lang);
+  }, [message.role, chatPreviewEnabled, content, isStreaming, lang]);
 
   React.useEffect(() => {
     if (isStreaming && reasoning && showReasoning) setReasoningOpen(true);
@@ -205,8 +268,6 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
     await editAndResend(message.id, editText);
   };
 
-  const dir = lang === "fa" ? "rtl" : "ltr";
-
   if (message.role === "user") {
     return (
       <motion.article
@@ -222,7 +283,10 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
             </div>
           )}
           {editing ? (
-            <div className="w-[min(86vw,640px)] rounded-[14px] border border-[var(--primary)]/40 bg-[var(--surface-1)] p-2 shadow-md">
+            <MenuFrame
+              className="w-[min(86vw,640px)] p-2"
+              style={{ "--hl": 1 } as React.CSSProperties}
+            >
               <textarea
                 autoFocus
                 value={editText}
@@ -258,14 +322,14 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
                   </button>
                 </span>
               </div>
-            </div>
+            </MenuFrame>
           ) : (
-            <div
-              className="rounded-[16px] border border-[color-mix(in_oklab,var(--primary)_22%,var(--border))] px-4 py-2.5"
-              style={{ background: "var(--user-bubble)" }}
+            <MenuFrame
+              className="px-4 py-2.5"
+              style={{ "--hl": 1 } as React.CSSProperties}
             >
               <Markdown content={message.content} className="prose-chat [&_p]:my-0.5" />
-            </div>
+            </MenuFrame>
           )}
         </div>
         <div className="flex items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/msg:opacity-100 sm:group-focus-within/msg:opacity-100">
@@ -296,7 +360,10 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
   }
 
   const errorMessage = message.error ? localizeError(message.error.message, t) : null;
-  const hint = message.error ? errorHint(message.error.kind, lang) : null;
+  const hint =
+    message.error && message.error.message !== "error.noKey" && message.error.message !== "error.vaultLocked"
+      ? errorHint(message.error.kind, lang)
+      : null;
 
   return (
     <motion.article
@@ -318,26 +385,25 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
         />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="mb-1 flex min-h-6 items-center gap-2">
+        <div className="mb-1 flex min-h-6 flex-wrap items-center gap-1.5">
           <span className="truncate text-[12.5px] font-semibold text-foreground">{modelName || providerName}</span>
           {model ? (
             <span className="hidden rounded-[5px] border border-[var(--border)] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[9.5px] text-[var(--faint)] sm:inline">
               {model.modelId}
             </span>
           ) : null}
+          {activeSkillId && activeSkillId !== "chat" ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--surface-2)]/80 px-2 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">
+              <SkillIcon mode={activeSkillId} size={11} />
+              <span>{t(`skill.${activeSkillId}`)}</span>
+              {activeSkillSources > 0 ? (
+                <span className="text-[var(--faint)]">
+                  · {t("skill.sourcesBadge", { n: activeSkillSources })}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
           <span className="text-[10.5px] text-[var(--faint)]">{formatRelativeTime(message.createdAt, lang)}</span>
-          <span className="ml-auto flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/msg:opacity-100 sm:group-focus-within/msg:opacity-100">
-            <BranchNav message={message} />
-            <IconButton label={t("common.copy")} onClick={copy}>
-              {copied ? <Check className="size-3.5 text-[var(--success)]" /> : <Copy className="size-3.5" />}
-            </IconButton>
-            <IconButton label={t("chat.regenerate")} onClick={() => regenerate(message.id)} disabled={isStreaming}>
-              <RefreshCw className="size-3.5" />
-            </IconButton>
-            <IconButton label={t("chat.deleteMessage")} onClick={() => setConfirmOpen(true)} danger>
-              <Trash2 className="size-3.5" />
-            </IconButton>
-          </span>
         </div>
 
         {showReasoning && reasoning ? (
@@ -372,7 +438,19 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
 
         {messageAttachments.length > 0 && <AttachmentStrip attachments={messageAttachments} />}
 
-        {content ? (
+        {artifact && (artifact.hasCode || (isStreaming && artifact.beforeText)) ? (
+          <>
+            {artifact.beforeText ? (
+              <Markdown content={artifact.beforeText} streaming={isStreaming && !artifact.hasCode} />
+            ) : null}
+            {artifact.hasCode ? (
+              <ArtifactCard messageId={message.id} artifact={artifact} />
+            ) : null}
+            {artifact.afterText ? (
+              <Markdown content={artifact.afterText} streaming={isStreaming} />
+            ) : null}
+          </>
+        ) : content ? (
           <Markdown content={content} streaming={isStreaming} />
         ) : isStreaming ? (
           <div className="py-1.5 text-[12.5px] font-medium tracking-[0.01em]">
@@ -403,23 +481,38 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
           </div>
         ) : null}
 
-        {message.stats && !isStreaming ? (
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-[var(--faint)]">
-            {typeof message.stats.latencyMs === "number" && <span>{(message.stats.latencyMs / 1000).toFixed(1)}s</span>}
-            {typeof message.stats.tokensOut === "number" && <span>{message.stats.tokensOut} tok</span>}
-            {message.stats.finishReason === "aborted" && <span className="text-[var(--warning)]">{t("chat.stopped")}</span>}
+        {!isStreaming ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <IconButton label={t("common.copy")} onClick={copy}>
+              {copied ? <Check className="size-3.5 text-[var(--success)]" /> : <Copy className="size-3.5" />}
+            </IconButton>
+            <IconButton label={t("chat.regenerate")} onClick={() => regenerate(message.id)} disabled={isStreaming}>
+              <RefreshCw className="size-3.5" />
+            </IconButton>
+            <IconButton
+              label={t("chat.like")}
+              onClick={() => toggleFeedback("up")}
+              active={feedback === "up" ? "up" : undefined}
+            >
+              <ThumbsUp className="size-3.5" />
+            </IconButton>
+            <IconButton
+              label={t("chat.dislike")}
+              onClick={() => toggleFeedback("down")}
+              active={feedback === "down" ? "down" : undefined}
+            >
+              <ThumbsDown className="size-3.5" />
+            </IconButton>
+            <BranchNav message={message} />
+            {message.stats ? (
+              <span className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-[var(--faint)]">
+                {typeof message.stats.latencyMs === "number" && <span>{(message.stats.latencyMs / 1000).toFixed(1)}s</span>}
+                {typeof message.stats.tokensOut === "number" && <span>{message.stats.tokensOut} tok</span>}
+                {message.stats.finishReason === "aborted" && <span className="text-[var(--warning)]">{t("chat.stopped")}</span>}
+              </span>
+            ) : null}
           </div>
         ) : null}
-
-        <ConfirmDialog
-          open={confirmOpen}
-          onOpenChange={setConfirmOpen}
-          title={t("chat.deleteMessage")}
-          confirmLabel={t("common.delete")}
-          cancelLabel={t("common.cancel")}
-          destructive
-          onConfirm={() => deleteMessage(message.id)}
-        />
       </div>
     </motion.article>
   );

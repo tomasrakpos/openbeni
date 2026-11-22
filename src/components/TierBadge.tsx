@@ -1,4 +1,6 @@
 // Shared component TierBadge; change its presentation here and update consumers if props change.
+import { Coins } from "lucide-react";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { Tier } from "@/lib/types";
 
@@ -9,15 +11,22 @@ const STYLES: Record<Tier, string> = {
 };
 
 export function TierBadge({ tier, className }: { tier: Tier; className?: string }) {
-  const label = tier === "free" ? "Free" : tier === "paid" ? "Paid" : "Unknown";
+  const t = useT();
+  const label =
+    tier === "free"
+      ? t("models.free")
+      : tier === "paid"
+        ? t("models.paid")
+        : t("models.unknown");
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-[0.06em]",
+        "inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-[1px] text-[10px] font-semibold tracking-[0.02em]",
         STYLES[tier],
         className,
       )}
     >
+      {tier === "paid" ? <Coins className="size-2.5" aria-hidden="true" /> : null}
       {label}
     </span>
   );

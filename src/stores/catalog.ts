@@ -4,13 +4,18 @@ import * as React from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { apiFetch } from "@/lib/api";
 import { APP_NAME } from "@/lib/bundled";
-import { getSupabase, supabaseConfigured } from "@/lib/supabase";
+import { getSupabase, getSupabaseAsync, supabaseConfigured } from "@/lib/supabase";
 import type { AIModel, Capability, Provider, Tier } from "@/lib/types";
 import { useAuthStore } from "@/stores/auth";
 import { useProvidersStore } from "@/stores/providers";
 
 /** Synthetic provider id for the site's own (server-run) models. */
 export const SERVER_PROVIDER_ID = "prov_server";
+
+/** Dev-only local mock provider so credits & streaming UX can be tested without any AI API key. */
+export const DEMO_PROVIDER_ID = "prov_demo";
+export const DEMO_MODEL_ID = "demo:preview-chat";
+export const DEMO_WEB_DESIGN_MODEL_ID = "demo:web-design";
 
 export interface PublicServerModel {
   id: string;
@@ -31,8 +36,9 @@ interface CatalogCache {
 
 const CACHE_KEY = "openharness.catalog.v1";
 const CACHE_TTL = 5 * 60_000;
-/** Refresh window for the public catalog (Realtime also nudges it instantly). */
-const POLL_MS = 30_000;
+/** Fast refresh window so admin panel edits reflect on the public site quickly. */
+const POLL_MS = import.meta.env.DEV ? 5_000 : 15_000;
+const MAX_POLL_MS = 120_000;
 
 const CAPABILITIES: Capability[] = ["text", "vision", "video", "audio", "tools", "reasoning"];
 
@@ -42,6 +48,7 @@ function readCache(): CatalogCache | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CatalogCache;
     if (!Array.isArray(parsed.models)) return null;
+    if (typeof parsed.at !== "number" || Date.now() - parsed.at > CACHE_TTL) return null;
     return parsed;
   } catch {
     return null;
@@ -159,7 +166,7 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
     // Realtime: the admin panel broadcasts a tiny "catalog-changed" event after
     // every mutation, so every connected picker refetches within seconds.
     if (supabaseConfigured()) {
-      subscribeRealtime();
+      void subscribeRealtime();
     }
 
     authUnsub = useAuthStore.subscribe((state, previous) => {
@@ -174,6 +181,10 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
       if (document.visibilityState === "visible") void get().refresh();
     });
 
+    window.addEventListener("focus", () => {
+      void get().refresh();
+    });
+
     if (import.meta.env.DEV) {
       // Another tab owns the admin preview; pick up provider/model changes
       // without waiting for the poll.
@@ -182,12 +193,28 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
       });
     }
 
-    pollTimer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void get().refresh();
-    }, POLL_MS);
+    let pollDelay = POLL_MS;
+    const scheduleNextPoll = () => {
+      if (pollTimer) window.clearTimeout(pollTimer);
+      pollTimer = window.setTimeout(async () => {
+        if (document.visibilityState === "visible") {
+          const ok = await refreshWithStatus();
+          pollDelay = ok ? POLL_MS : Math.min(pollDelay * 2, MAX_POLL_MS);
+        }
+        scheduleNextPoll();
+      }, pollDelay);
+    };
+
+    const refreshWithStatus = async (): Promise<boolean> => {
+      const before = get().lastUpdated;
+      await get().refresh();
+      return get().status === "ready" || get().lastUpdated > before;
+    };
+
+    scheduleNextPoll();
 
     window.addEventListener("pagehide", () => {
-      if (pollTimer) window.clearInterval(pollTimer);
+      if (pollTimer) window.clearTimeout(pollTimer);
       authUnsub?.();
       if (channel) void getSupabase()?.removeChannel(channel);
       channel = null;
@@ -221,11 +248,14 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
   },
 }));
 
-function subscribeRealtime(): void {
-  const supabase = getSupabase();
+async function subscribeRealtime(): Promise<void> {
+  const supabase = await getSupabaseAsync();
   if (!supabase) return;
   const refreshSoon = () => {
-    if (useAuthStore.getState().signedIn) void useCatalogStore.getState().refresh();
+    void useCatalogStore.getState().refresh();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("openharneks:catalog-changed"));
+    }
   };
 
   channel = supabase
@@ -238,9 +268,69 @@ function subscribeRealtime(): void {
     });
 }
 
-/** Merged provider list for chat surfaces: user BYOK first, then server models. */
+export function demoProvider(): Provider {
+  return {
+    id: DEMO_PROVIDER_ID,
+    name: "Demo Preview",
+    baseUrl: "",
+    apiFormat: "openai",
+    auth: { header: "", prefix: "" },
+    extraHeaders: {},
+    timeoutMs: 30_000,
+    useProxy: false,
+    enabled: true,
+    favorite: false,
+    order: 9_999,
+    bundled: true,
+    managed: true,
+    paths: {},
+    hasKey: true,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+export function demoModel(): AIModel {
+  return {
+    id: DEMO_MODEL_ID,
+    providerId: DEMO_PROVIDER_ID,
+    modelId: "demo-preview-chat",
+    displayName: "Demo Chat (Mock Test)",
+    contextWindow: 16_000,
+    capabilities: ["text"],
+    tier: "free",
+    enabled: true,
+    favorite: false,
+    order: 9_999,
+    source: "manual",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+export function demoWebDesignModel(): AIModel {
+  return {
+    id: DEMO_WEB_DESIGN_MODEL_ID,
+    providerId: DEMO_PROVIDER_ID,
+    modelId: "demo-web-design",
+    displayName: "Web Design (Mock Test)",
+    contextWindow: 16_000,
+    capabilities: ["text"],
+    tier: "free",
+    enabled: true,
+    favorite: false,
+    order: 10_000,
+    source: "manual",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+/** Merged provider list for chat surfaces: user BYOK first, then server models (+ dev demo mock). */
 export function withServerProvider(providers: Provider[], serverModels: AIModel[]): Provider[] {
-  return serverModels.length > 0 ? [...providers, serverProvider()] : providers;
+  const next = serverModels.length > 0 ? [...providers, serverProvider()] : [...providers];
+  if (import.meta.env.DEV) next.push(demoProvider());
+  return next;
 }
 
 /** React hook: local BYOK providers plus the synthetic site provider. */
@@ -253,12 +343,13 @@ export function useAllProviders(): Provider[] {
   );
 }
 
-/** React hook: local BYOK models plus the site's enabled models. */
+/** React hook: local BYOK models plus the site's enabled models (+ dev demo mock). */
 export function useAllModels(): AIModel[] {
   const local = useProvidersStore((state) => state.models);
   const serverModels = useCatalogStore((state) => state.providerModels);
-  return React.useMemo(
-    () => (serverModels.length > 0 ? [...local, ...serverModels] : local),
-    [local, serverModels],
-  );
+  return React.useMemo(() => {
+    const base = serverModels.length > 0 ? [...local, ...serverModels] : [...local];
+    if (import.meta.env.DEV) base.push(demoModel(), demoWebDesignModel());
+    return base;
+  }, [local, serverModels]);
 }

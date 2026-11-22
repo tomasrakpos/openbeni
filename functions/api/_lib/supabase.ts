@@ -29,6 +29,28 @@ function serviceHeaders(env: SupabaseEnv): Headers {
   });
 }
 
+const SB_REST_TIMEOUT_MS = 10_000;
+const SB_AUTH_TIMEOUT_MS = 8_000;
+const SB_BROADCAST_TIMEOUT_MS = 2_500;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const callerSignal = init.signal;
+  const onAbort = () => controller.abort();
+  callerSignal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Service-role REST call. Never expose the response of a secrets table. */
 export async function sbFetch(
   env: SupabaseEnv,
@@ -38,7 +60,7 @@ export async function sbFetch(
   const url = `${supabaseUrl(env)}/rest/v1/${path.replace(/^\/+/, "")}`;
   const headers = serviceHeaders(env);
   if (init.headers) new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-  return fetch(url, { ...init, headers, cache: "no-store" });
+  return fetchWithTimeout(url, { ...init, headers, cache: "no-store" }, SB_REST_TIMEOUT_MS);
 }
 
 export async function sbJson<T>(
@@ -81,10 +103,14 @@ export async function verifyAccessToken(
   const anon = (env.SUPABASE_ANON_KEY ?? "").trim();
   if (!anon) return null;
   try {
-    const response = await fetch(`${supabaseUrl(env)}/auth/v1/user`, {
-      headers: { apikey: anon, Authorization: `Bearer ${token}` },
-      cache: "no-store",
-    });
+    const response = await fetchWithTimeout(
+      `${supabaseUrl(env)}/auth/v1/user`,
+      {
+        headers: { apikey: anon, Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      },
+      SB_AUTH_TIMEOUT_MS,
+    );
     if (!response.ok) return null;
     const user = (await response.json()) as {
       id?: string;
@@ -109,18 +135,26 @@ export function adminEmails(env: SupabaseEnv & { ADMIN_EMAILS?: string }): strin
     .filter(Boolean);
 }
 
-/** Fire-and-forget catalog change broadcast for connected clients. */
+/**
+ * Broadcast catalog change to connected clients via Supabase Realtime.
+ * Bounded to 2.5s and swallows errors so handlers can safely `await` it
+ * before returning (Cloudflare Workers cancels un-awaited floating fetches).
+ */
 export async function broadcastCatalogChange(env: SupabaseEnv): Promise<void> {
   if (!supabaseConfigured(env)) return;
   try {
-    await fetch(`${supabaseUrl(env)}/realtime/v1/api/broadcast`, {
-      method: "POST",
-      headers: serviceHeaders(env),
-      body: JSON.stringify({
-        messages: [{ topic: "catalog", event: "catalog-changed", payload: { at: Date.now() } }],
-      }),
-      cache: "no-store",
-    });
+    await fetchWithTimeout(
+      `${supabaseUrl(env)}/realtime/v1/api/broadcast`,
+      {
+        method: "POST",
+        headers: serviceHeaders(env),
+        body: JSON.stringify({
+          messages: [{ topic: "catalog", event: "catalog-changed", payload: { at: Date.now() } }],
+        }),
+        cache: "no-store",
+      },
+      SB_BROADCAST_TIMEOUT_MS,
+    );
   } catch {
     // Realtime is best-effort; clients also poll on focus.
   }

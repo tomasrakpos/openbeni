@@ -1,6 +1,8 @@
 // layout feature: RightPanel; change its UI/flow here and keep related state/API calls in sync.
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  AlertTriangle,
+  Check,
+  ChevronLeft,
   ChevronRight,
   Code2,
   Copy,
@@ -11,7 +13,6 @@ import {
   Folder,
   FolderOpen,
   History,
-  Laptop,
   Loader2,
   Maximize2,
   Monitor,
@@ -27,14 +28,36 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 import { CopyButton } from "@/components/CopyButton";
-import { Segmented } from "@/components/ui/segmented";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { db } from "@/db";
+import { PreviewCropOverlay } from "@/features/preview/PreviewCropOverlay";
+import {
+  AiElementPromptPopover,
+  ManualElementInspectorPopover,
+} from "@/features/preview/PreviewElementPopovers";
+import { PreviewStudioBar } from "@/features/preview/PreviewStudioBar";
+import type {
+  CodeInjectMode,
+  CropRect,
+  ElementStylePatch,
+  PreviewStudioMode,
+  SelectedElementInfo,
+  StudioFromIframeMessage,
+} from "@/features/preview/previewBridge";
+import { useAuthStore } from "@/stores/auth";
 import { activeThread, useChatsStore } from "@/stores/chats";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore, type PreviewDevice, type RightTab } from "@/stores/ui";
-import { buildPreviewHtml, extractProjectFiles, fileTree, type TreeNode } from "@/lib/codefiles";
+import {
+  buildPreviewHtml,
+  extractProjectFiles,
+  extractStreamingProjectFiles,
+  fileTree,
+  splitChatAndArtifact,
+  type ChatArtifactSplit,
+  type TreeNode,
+} from "@/lib/codefiles";
 import { diffLines, diffStat } from "@/lib/diff";
 import { copyToClipboard, downloadText, downloadZip, safeFilename } from "@/lib/export";
 import { useT } from "@/lib/i18n";
@@ -84,13 +107,18 @@ function PanelEmpty({
 }
 
 interface PanelFilesState {
-  candidates: { message: Message; files: VirtualFile[] }[];
-  selected: { message: Message; files: VirtualFile[] } | null;
+  candidates: { message: Message; files: VirtualFile[]; isStreaming?: boolean }[];
+  selected: { message: Message; files: VirtualFile[]; isStreaming?: boolean } | null;
   files: VirtualFile[];
   restored: RestoredVersion | null;
   chat: Chat | null;
+  isStreamingActive: boolean;
+  streamingArtifact: ChatArtifactSplit | null;
+  studioMode: PreviewStudioMode;
+  setStudioMode: React.Dispatch<React.SetStateAction<PreviewStudioMode>>;
   selectMessage: (messageId: string) => void;
   restoreVersion: (version: ProjectVersion) => void;
+  saveManualHtml: (nextHtml: string) => Promise<void>;
   clearRestored: () => void;
 }
 
@@ -99,31 +127,62 @@ function usePanelFilesState(): PanelFilesState {
   const messages = useChatsStore((s) => s.messages);
   const chats = useChatsStore((s) => s.chats);
   const activeChatId = useChatsStore((s) => s.activeChatId);
+  const streaming = useChatsStore((s) => s.streaming);
+  const lang = useSettingsStore((s) => s.settings.lang);
+  const requestedMessageId = useUiStore((s) => s.selectedArtifactMessageId);
+  const setRequestedMessageId = useUiStore((s) => s.setSelectedArtifactMessageId);
   const chat = chats.find((c) => c.id === activeChatId) ?? null;
   const thread = React.useMemo(() => activeThread(messages, chat), [messages, chat]);
+  const isStreamingActive = Boolean(streaming && chat && streaming.chatId === chat.id);
 
-  const candidates = React.useMemo(
-    () =>
-      thread
-        .filter((message) => message.role === "assistant" && message.content.trim().length > 0)
-        .map((message) => ({ message, files: extractProjectFiles(message.content) }))
-        .filter((entry) => entry.files.length > 0)
-        .reverse(),
-    [thread],
-  );
+  const streamingArtifact = React.useMemo(() => {
+    if (!isStreamingActive || !streaming) return null;
+    return splitChatAndArtifact(streaming.content, true, lang);
+  }, [isStreamingActive, streaming, lang]);
+
+  const candidates = React.useMemo(() => {
+    const out: { message: Message; files: VirtualFile[]; isStreaming?: boolean }[] = [];
+    for (const message of thread) {
+      if (message.role !== "assistant") continue;
+      const isLive = Boolean(streaming && streaming.messageId === message.id);
+      const raw = isLive ? streaming?.content ?? "" : message.content;
+      if (!raw.trim()) continue;
+      const files = isLive ? extractStreamingProjectFiles(raw).files : extractProjectFiles(raw);
+      if (files.length > 0) {
+        out.push({ message, files, isStreaming: isLive });
+      }
+    }
+    return out.reverse();
+  }, [thread, streaming]);
 
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [restored, setRestored] = React.useState<RestoredVersion | null>(null);
+  const [studioMode, setStudioMode] = React.useState<PreviewStudioMode>("off");
 
+  // Honor explicit ArtifactCard clicks from chat.
+  React.useEffect(() => {
+    if (!requestedMessageId) return;
+    if (candidates.some((entry) => entry.message.id === requestedMessageId)) {
+      setRestored(null);
+      setSelectedId(requestedMessageId);
+    }
+    setRequestedMessageId(null);
+  }, [requestedMessageId, candidates, setRequestedMessageId]);
+
+  // Follow the latest completed or streaming project automatically.
   React.useEffect(() => {
     if (candidates.length === 0) {
       setSelectedId(null);
       return;
     }
+    if (isStreamingActive && streaming && candidates[0]?.message.id === streaming.messageId) {
+      setSelectedId(streaming.messageId);
+      return;
+    }
     if (!selectedId || !candidates.some((entry) => entry.message.id === selectedId)) {
       setSelectedId(candidates[0]?.message.id ?? null);
     }
-  }, [candidates, selectedId]);
+  }, [candidates, selectedId, isStreamingActive, streaming]);
 
   const selected = candidates.find((entry) => entry.message.id === selectedId) ?? candidates[0] ?? null;
   const files =
@@ -145,14 +204,46 @@ function usePanelFilesState(): PanelFilesState {
 
   const clearRestored = React.useCallback(() => setRestored(null), []);
 
+  const saveManualHtml = React.useCallback(
+    async (nextHtml: string) => {
+      if (!selected || !chat) return;
+      const baseFiles =
+        restored && restored.messageId === selected.message.id ? restored.files : selected.files;
+      const entryIndex = baseFiles.findIndex(
+        (f) => f.path === "index.html" || f.language === "html",
+      );
+      const updatedFiles: VirtualFile[] =
+        entryIndex >= 0
+          ? baseFiles.map((f, idx) => (idx === entryIndex ? { ...f, content: nextHtml } : f))
+          : [{ path: "index.html", language: "html", content: nextHtml }, ...baseFiles];
+      const versionId = uid("ver");
+      const version: ProjectVersion = {
+        id: versionId,
+        chatId: chat.id,
+        messageId: selected.message.id,
+        label: `Visual edit`,
+        files: updatedFiles,
+        createdAt: Date.now(),
+      };
+      await db.versions.put(version);
+      setRestored({ messageId: selected.message.id, files: updatedFiles, versionId });
+    },
+    [chat, restored, selected],
+  );
+
   return {
     candidates,
     selected,
     files,
     restored,
     chat,
+    isStreamingActive,
+    streamingArtifact,
+    studioMode,
+    setStudioMode,
     selectMessage,
     restoreVersion,
+    saveManualHtml,
     clearRestored,
   };
 }
@@ -165,44 +256,313 @@ function usePanelContext(): PanelFilesState {
   return value;
 }
 
+function dataUrlToFile(dataUrl: string, filename: string): File {
+  const [header, base64] = dataUrl.split(",");
+  const mimeMatch = header?.match(/data:([^;]+)/i);
+  const mime = mimeMatch?.[1] || "image/png";
+  const bin = atob(base64 || "");
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return new File([bytes], filename, { type: mime });
+}
+
 function PreviewPane() {
   const t = useT();
-  const { candidates, selected, files, restored, selectMessage, clearRestored } = usePanelContext();
+  const {
+    candidates,
+    selected,
+    files,
+    restored,
+    isStreamingActive,
+    streamingArtifact,
+    studioMode,
+    setStudioMode,
+    selectMessage,
+    saveManualHtml,
+    clearRestored,
+  } = usePanelContext();
   const previewDevice = useUiStore((s) => s.previewDevice);
   const setPreviewDevice = useUiStore((s) => s.setPreviewDevice);
+  const setRightTab = useUiStore((s) => s.setRightTab);
+  const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [lines, setLines] = React.useState<ConsoleLine[]>([]);
 
+  // Preview Studio tools state (capture, AI element edit, manual visual edit)
+  const iframeRef = React.useRef<HTMLIFrameElement>(null);
+  const [selectedElement, setSelectedElement] = React.useState<SelectedElementInfo | null>(null);
+  const [capturing, setCapturing] = React.useState(false);
+  const [captureCount, setCaptureCount] = React.useState(0);
+  const [aiSubmitting, setAiSubmitting] = React.useState(false);
+  const pendingCaptureIdRef = React.useRef<string | null>(null);
+  const pendingExportIdRef = React.useRef<string | null>(null);
+  const captureSeqRef = React.useRef(0);
+  const pendingPatchRef = React.useRef<ElementStylePatch | null>(null);
+  const patchRafRef = React.useRef(0);
+
+  const postToIframe = React.useCallback((payload: Record<string, unknown>) => {
+    iframeRef.current?.contentWindow?.postMessage({ __ohStudio: true, ...payload }, "*");
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (patchRafRef.current) window.cancelAnimationFrame(patchRafRef.current);
+    };
+  }, []);
+
+  // Sync active studio mode into the preview iframe whenever mode changes.
+  React.useEffect(() => {
+    postToIframe({ type: "set-mode", mode: studioMode });
+    if (studioMode !== "ai-pick" && studioMode !== "manual-edit") {
+      setSelectedElement(null);
+    }
+    if (studioMode !== "capture") {
+      setCaptureCount(0);
+    }
+  }, [studioMode, postToIframe]);
+
+  // Esc closes open element drawer first, then exits active studio mode.
+  React.useEffect(() => {
+    if (studioMode === "off" && !selectedElement) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (selectedElement) {
+        setSelectedElement(null);
+        postToIframe({ type: "clear-selection" });
+      } else {
+        setStudioMode("off");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [studioMode, selectedElement, postToIframe, setStudioMode]);
+
   React.useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      const data = event.data as { __apiset?: boolean; type?: string; args?: unknown[] } | undefined;
-      if (!data || data.__apiset !== true) return;
-      const type = (data.type === "warn" || data.type === "error" || data.type === "info" || data.type === "debug"
-        ? data.type
-        : "log") as ConsoleLine["type"];
-      const text = (data.args ?? [])
-        .map((value) => {
-          if (typeof value === "string") return value;
-          try {
-            return JSON.stringify(value);
-          } catch {
-            return String(value);
-          }
-        })
-        .join(" ");
-      setLines((current) => [...current.slice(-119), { type, text, at: Date.now() }]);
+      const raw = event.data as Record<string, unknown> | null | undefined;
+      if (!raw || typeof raw !== "object") return;
+
+      if (raw.__apiset === true) {
+        const logData = raw as { __apiset: true; type?: string; args?: unknown[] };
+        const type = (logData.type === "warn" || logData.type === "error" || logData.type === "info" || logData.type === "debug"
+          ? logData.type
+          : "log") as ConsoleLine["type"];
+        const text = (logData.args ?? [])
+          .map((value) => {
+            if (typeof value === "string") return value;
+            try {
+              return JSON.stringify(value);
+            } catch {
+              return String(value);
+            }
+          })
+          .join(" ");
+        setLines((current) => [...current.slice(-119), { type, text, at: Date.now() }]);
+        return;
+      }
+
+      if (raw.__ohStudio !== true) return;
+      if (iframeRef.current && event.source !== iframeRef.current.contentWindow) return;
+      const data = raw as unknown as StudioFromIframeMessage;
+
+      if (data.type === "element-selected" && data.info) {
+        setSelectedElement(data.info);
+        return;
+      }
+
+      if (data.type === "element-deleted") {
+        setSelectedElement(null);
+        toast.success(t("preview.studio.deleted"));
+        return;
+      }
+
+      if (data.type === "element-duplicated") {
+        toast.success(t("preview.studio.duplicated"));
+        return;
+      }
+
+      if (data.type === "code-applied") {
+        if (data.ok) toast.success(t("preview.studio.codeApplied"));
+        else toast.error(data.error || t("preview.studio.codeFailed"));
+        return;
+      }
+
+      if (data.type === "capture-result" && data.requestId === pendingCaptureIdRef.current && data.dataUrl) {
+        pendingCaptureIdRef.current = null;
+        setCapturing(false);
+        captureSeqRef.current += 1;
+        const seq = captureSeqRef.current;
+        try {
+          const file = dataUrlToFile(data.dataUrl, `preview-capture-${seq}.png`);
+          void useChatsStore
+            .getState()
+            .addFiles([file])
+            .then((res) => {
+              if (res.added > 0) {
+                setCaptureCount((n) => n + 1);
+                toast.success(t("preview.studio.captureAdded"));
+              } else if (res.errors.length > 0) {
+                toast.error(t(res.errors[0] ?? "preview.studio.captureFailed"));
+              }
+            });
+        } catch {
+          toast.error(t("preview.studio.captureFailed"));
+        }
+        return;
+      }
+
+      if (data.type === "capture-error" && data.requestId === pendingCaptureIdRef.current) {
+        pendingCaptureIdRef.current = null;
+        setCapturing(false);
+        toast.error(t("preview.studio.captureFailed"));
+        return;
+      }
+
+      if (data.type === "export-html-result" && data.requestId === pendingExportIdRef.current && data.html) {
+        pendingExportIdRef.current = null;
+        void saveManualHtml(data.html).then(() => {
+          setSelectedElement(null);
+          setStudioMode("off");
+          postToIframe({ type: "clear-selection" });
+          toast.success(t("preview.studio.saved"));
+        });
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [postToIframe, saveManualHtml, setStudioMode, t]);
 
   const built = React.useMemo(() => buildPreviewHtml(files), [files]);
 
   const reload = () => {
     setLines([]);
+    setSelectedElement(null);
     setReloadKey((value) => value + 1);
   };
+
+  const handleConfirmCapture = React.useCallback(
+    (rect: CropRect) => {
+      const requestId = uid("cap");
+      pendingCaptureIdRef.current = requestId;
+      setCapturing(true);
+      postToIframe({ type: "capture-region", rect, requestId });
+      window.setTimeout(() => {
+        if (pendingCaptureIdRef.current === requestId) {
+          pendingCaptureIdRef.current = null;
+          setCapturing(false);
+          toast.error(t("preview.studio.captureFailed"));
+        }
+      }, 6000);
+    },
+    [postToIframe, t],
+  );
+
+  const handleAiElementSubmit = React.useCallback(
+    async (instruction: string) => {
+      if (!selectedElement) return;
+      if (!useAuthStore.getState().signedIn) {
+        setAuthGateOpen(true);
+        return;
+      }
+      setAiSubmitting(true);
+      const target = selectedElement;
+      const snippet = target.outerHtml.slice(0, 700);
+      const formattedPrompt = [
+        `Update ONLY this selected element in the current preview (keep everything else intact):`,
+        `- Element: \`${target.label}\``,
+        `- Selector: \`${target.selector}\``,
+        target.text ? `- Current text: "${target.text.slice(0, 120)}"` : null,
+        snippet ? `- Current HTML:\n\`\`\`html\n${snippet}\n\`\`\`` : null,
+        `\nRequested change:\n${instruction}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      setSelectedElement(null);
+      setStudioMode("off");
+      postToIframe({ type: "clear-selection" });
+      toast.success(t("preview.studio.aiSent"));
+      try {
+        await useChatsStore.getState().send(formattedPrompt);
+      } finally {
+        setAiSubmitting(false);
+      }
+    },
+    [selectedElement, setAuthGateOpen, setStudioMode, postToIframe, t],
+  );
+
+  // Coalesce high-frequency slider updates to 1 merged postMessage per animation frame.
+  const handleManualPatch = React.useCallback(
+    (patch: ElementStylePatch) => {
+      pendingPatchRef.current = { ...(pendingPatchRef.current ?? {}), ...patch };
+      if (patchRafRef.current) return;
+      patchRafRef.current = window.requestAnimationFrame(() => {
+        patchRafRef.current = 0;
+        const merged = pendingPatchRef.current;
+        pendingPatchRef.current = null;
+        if (merged) postToIframe({ type: "apply-style", patch: merged });
+      });
+    },
+    [postToIframe],
+  );
+
+  const handleManualReset = React.useCallback(() => {
+    postToIframe({ type: "reset-element" });
+  }, [postToIframe]);
+
+  const handleSelectParent = React.useCallback(() => {
+    postToIframe({ type: "select-parent" });
+  }, [postToIframe]);
+
+  const handleReorder = React.useCallback(
+    (dir: "up" | "down") => {
+      postToIframe({ type: "reorder-element", dir });
+    },
+    [postToIframe],
+  );
+
+  const handleInjectCode = React.useCallback(
+    (mode: CodeInjectMode, code: string) => {
+      postToIframe({ type: "inject-code", mode, code });
+    },
+    [postToIframe],
+  );
+
+  const handleManualDuplicate = React.useCallback(() => {
+    postToIframe({ type: "duplicate-element" });
+  }, [postToIframe]);
+
+  const handleManualDelete = React.useCallback(() => {
+    postToIframe({ type: "delete-element" });
+  }, [postToIframe]);
+
+  const handleManualSave = React.useCallback(() => {
+    const requestId = uid("exp");
+    pendingExportIdRef.current = requestId;
+    postToIframe({ type: "export-html", requestId });
+  }, [postToIframe]);
+
+  const closeElementPopover = React.useCallback(() => {
+    setSelectedElement(null);
+    postToIframe({ type: "clear-selection" });
+  }, [postToIframe]);
+
+  const closeManualEditor = React.useCallback(() => {
+    setSelectedElement(null);
+    setStudioMode("off");
+    postToIframe({ type: "clear-selection" });
+  }, [postToIframe, setStudioMode]);
+
+  const handleSelectStudioMode = React.useCallback(
+    (next: PreviewStudioMode) => {
+      setSelectedElement(null);
+      setStudioMode(next);
+    },
+    [setStudioMode],
+  );
 
   const openExternal = () => {
     if (!built.html) return;
@@ -211,6 +571,90 @@ function PreviewPane() {
     window.open(url, "_blank", "noopener,noreferrer");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
+
+  // While the model is actively building the selected preview (or hasn't closed
+  // the code fence yet), show a sleek live-building canvas inside the preview
+  // pane so users can swipe in immediately and watch progress in real time.
+  const showLiveBuilding = Boolean(
+    isStreamingActive && (!selected || selected.isStreaming) && streamingArtifact?.isBuilding,
+  );
+
+  if (showLiveBuilding && streamingArtifact) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5 py-8">
+        <div className="w-full max-w-[360px] rounded-[18px] border border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_80%,transparent)] p-5 shadow-sm backdrop-blur-xl">
+          <div className="flex items-center gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-[12px] border border-[color-mix(in_oklab,var(--accent)_35%,transparent)] bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-[var(--accent)]">
+              <Loader2 className="size-4.5 animate-spin" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13.5px] font-semibold text-foreground">
+                {streamingArtifact.title}
+              </p>
+              <p className="mt-0.5 text-[11.5px] text-[var(--muted-foreground)]">
+                {t("preview.building")}
+              </p>
+            </div>
+            {streamingArtifact.totalLines > 0 ? (
+              <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 font-mono text-[10px] tabular-nums text-[var(--muted-foreground)]">
+                {t("preview.linesCount", { n: streamingArtifact.totalLines })}
+              </span>
+            ) : null}
+          </div>
+
+          {streamingArtifact.steps.length > 0 ? (
+            <ul className="mt-4 space-y-2 border-t border-[var(--border)]/70 pt-3.5">
+              {streamingArtifact.steps.map((step) => (
+                <li key={step.id} className="flex items-center gap-2.5 text-[12px]">
+                  {step.status === "active" ? (
+                    <span className="relative flex size-4 shrink-0 items-center justify-center">
+                      <span className="absolute inline-flex size-3 animate-ping rounded-full bg-[var(--accent)]/45" />
+                      <span className="relative inline-flex size-1.5 rounded-full bg-[var(--accent)]" />
+                    </span>
+                  ) : step.status === "done" ? (
+                    <span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--success-soft)] text-[var(--success)]">
+                      <Check className="size-2.5 stroke-[2.5]" />
+                    </span>
+                  ) : (
+                    <span className="grid size-4 shrink-0 place-items-center">
+                      <span className="size-2 rounded-full border border-[var(--border-strong)]" />
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      "min-w-0 truncate transition-colors",
+                      step.status === "active"
+                        ? "font-medium text-foreground"
+                        : step.status === "done"
+                          ? "text-[var(--muted-foreground)]"
+                          : "text-[var(--faint)]",
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <p className="mt-4 text-[11px] leading-relaxed text-[var(--faint)]">
+            {t("preview.buildingHint")}
+          </p>
+
+          {streamingArtifact.files.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setRightTab("files")}
+              className="mt-3.5 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/75 px-3 text-[11.5px] font-medium text-foreground transition-colors hover:bg-[var(--surface-2)]"
+            >
+              <Code2 className="size-3.5" />
+              <span>{t("preview.viewCode")}</span>
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   if (!selected) {
     return (
@@ -223,102 +667,170 @@ function PreviewPane() {
   }
 
   const errorLines = lines.filter((line) => line.type === "error").length;
+  const hideTopChrome = studioMode === "manual-edit";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--border)] px-2.5 py-1.5">
-        <Segmented
-          aria-label={t("preview.title")}
-          value={previewDevice}
-          onChange={(value) => setPreviewDevice(value as PreviewDevice)}
-          options={[
-            { value: "desktop", label: <Monitor className="size-3.5" aria-label={t("preview.desktop")} /> },
-            { value: "tablet", label: <Tablet className="size-3.5" aria-label={t("preview.tablet")} /> },
-            { value: "mobile", label: <Smartphone className="size-3.5" aria-label={t("preview.mobile")} /> },
-          ]}
-        />
-        {candidates.length > 1 ? (
-          <select
-            value={selected.message.id}
-            onChange={(event) => selectMessage(event.target.value)}
-            aria-label={t("preview.project")}
-            className="h-6 max-w-[120px] rounded-[7px] border border-[var(--border)] bg-[var(--surface-2)] px-1.5 font-mono text-[10px] text-[var(--muted-foreground)] outline-none"
+      <AnimatePresence initial={false}>
+        {!hideTopChrome ? (
+          <motion.div
+            key="preview-device-toolbar"
+            initial={{ height: 0, opacity: 0, y: -8 }}
+            animate={{ height: "auto", opacity: 1, y: 0 }}
+            exit={{ height: 0, opacity: 0, y: -8 }}
+            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            className="shrink-0 overflow-hidden"
+            style={{ willChange: "height, opacity, transform" }}
           >
-            {candidates.map((entry, index) => (
-              <option key={entry.message.id} value={entry.message.id}>
-                #{candidates.length - index} · {entry.files.length}f
-              </option>
-            ))}
-          </select>
-        ) : null}
-        <div className="ml-auto flex items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={reload}
-                aria-label={t("preview.reload")}
-                className="grid size-6 place-items-center rounded-[6px] text-[var(--faint)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--border)] px-2.5 py-1.5">
+              <Tabs
+                value={previewDevice}
+                onValueChange={(value) => setPreviewDevice(value as PreviewDevice)}
               >
-                <RefreshCw className="size-3" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{t("preview.reload")}</TooltipContent>
-          </Tooltip>
-          <button
-            type="button"
-            onClick={() => setConsoleOpen((value) => !value)}
-            aria-pressed={consoleOpen}
-            className={cn(
-              "inline-flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[10px] transition-colors hover:bg-[var(--surface-2)]",
-              consoleOpen ? "text-foreground" : "text-[var(--faint)] hover:text-foreground",
-            )}
-          >
-            <Terminal className="size-3" />
-            {t("preview.console")}
-            {errorLines > 0 ? (
-              <span className="grid min-w-[14px] place-items-center rounded-full bg-[var(--destructive-soft)] px-1 text-[9px] font-semibold text-[var(--destructive)]">
-                {errorLines}
-              </span>
-            ) : null}
-          </button>
-          <button
-            type="button"
-            onClick={openExternal}
-            aria-label={t("preview.open")}
-            className="grid size-6 place-items-center rounded-[6px] text-[var(--faint)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
-          >
-            <Maximize2 className="size-3" />
-          </button>
-        </div>
-      </div>
+                <TabsList>
+                  <TabsTrigger value="desktop" aria-label={t("preview.desktop")} className="px-2">
+                    <Monitor className="size-3.5" />
+                  </TabsTrigger>
+                  <TabsTrigger value="tablet" aria-label={t("preview.tablet")} className="px-2">
+                    <Tablet className="size-3.5" />
+                  </TabsTrigger>
+                  <TabsTrigger value="mobile" aria-label={t("preview.mobile")} className="px-2">
+                    <Smartphone className="size-3.5" />
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+              {candidates.length > 1 ? (
+                <select
+                  value={selected.message.id}
+                  onChange={(event) => selectMessage(event.target.value)}
+                  aria-label={t("preview.project")}
+                  className="h-6 max-w-[120px] rounded-[7px] border border-[var(--border)] bg-[var(--surface-2)] px-1.5 font-mono text-[10px] text-[var(--muted-foreground)] outline-none"
+                >
+                  {candidates.map((entry, index) => (
+                    <option key={entry.message.id} value={entry.message.id}>
+                      #{candidates.length - index} · {entry.files.length}f
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <div className="ml-auto flex items-center gap-0.5">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={reload}
+                      aria-label={t("preview.reload")}
+                      className="grid size-6 place-items-center rounded-[6px] text-[var(--faint)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
+                    >
+                      <RefreshCw className="size-3" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t("preview.reload")}</TooltipContent>
+                </Tooltip>
+                <button
+                  type="button"
+                  onClick={() => setConsoleOpen((value) => !value)}
+                  aria-pressed={consoleOpen}
+                  className={cn(
+                    "inline-flex h-6 items-center gap-1 rounded-[6px] px-1.5 text-[10px] transition-colors hover:bg-[var(--surface-2)]",
+                    consoleOpen ? "text-foreground" : "text-[var(--faint)] hover:text-foreground",
+                  )}
+                >
+                  <Terminal className="size-3" />
+                  {t("preview.console")}
+                  {errorLines > 0 ? (
+                    <span className="grid min-w-[14px] place-items-center rounded-full bg-[var(--destructive-soft)] px-1 text-[9px] font-semibold text-[var(--destructive)]">
+                      {errorLines}
+                    </span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  onClick={openExternal}
+                  aria-label={t("preview.open")}
+                  className="grid size-6 place-items-center rounded-[6px] text-[var(--faint)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
+                >
+                  <Maximize2 className="size-3" />
+                </button>
+              </div>
+            </div>
 
-      {restored ? (
-        <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--primary-soft)] px-2.5 py-1 text-[10px] text-[var(--primary)]">
-          <span className="inline-flex items-center gap-1.5">
-            <History className="size-3" /> {t("preview.restored")}
-          </span>
-          <button type="button" onClick={clearRestored} className="hover:underline">
-            {t("preview.project")}
-          </button>
-        </div>
-      ) : null}
+            {restored ? (
+              <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--primary-soft)] px-2.5 py-1 text-[10px] text-[var(--primary)]">
+                <span className="inline-flex items-center gap-1.5">
+                  <History className="size-3" /> {t("preview.restored")}
+                </span>
+                <button type="button" onClick={clearRestored} className="hover:underline">
+                  {t("preview.project")}
+                </button>
+              </div>
+            ) : null}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--surface-2)]/40 p-2">
         <div
-          className="mx-auto flex min-h-0 w-full flex-1 justify-center overflow-hidden rounded-[10px] border border-[var(--border)] bg-white shadow-sm"
+          className="relative mx-auto flex min-h-0 w-full flex-1 justify-center overflow-hidden rounded-[10px] border border-[var(--border)] bg-white shadow-sm"
           style={{ maxWidth: DEVICE_WIDTH[previewDevice] }}
         >
           <iframe
+            ref={iframeRef}
             key={`${selected.message.id}-${reloadKey}-${previewDevice}-${restored?.versionId ?? "live"}`}
             title={t("preview.title")}
             srcDoc={built.html}
+            onLoad={() => {
+              if (studioMode !== "off") {
+                postToIframe({ type: "set-mode", mode: studioMode });
+              }
+            }}
             sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock"
             referrerPolicy="no-referrer"
             className="h-full min-h-[220px] w-full border-0 bg-white"
           />
+
+          <AnimatePresence>
+            {studioMode === "capture" ? (
+              <PreviewCropOverlay
+                key="crop-overlay"
+                capturing={capturing}
+                captureCount={captureCount}
+                onConfirm={handleConfirmCapture}
+                onCancel={() => setStudioMode("off")}
+              />
+            ) : null}
+          </AnimatePresence>
         </div>
       </div>
+
+      {/* Non-blocking docked studio drawers: website above stays 100% visible */}
+      <AnimatePresence initial={false}>
+        {studioMode === "ai-pick" && selectedElement ? (
+          <AiElementPromptPopover
+            key="ai-dock-tray"
+            element={selectedElement}
+            submitting={aiSubmitting}
+            onSubmit={(instruction) => void handleAiElementSubmit(instruction)}
+            onClose={closeElementPopover}
+          />
+        ) : null}
+
+        {studioMode === "manual-edit" && selectedElement ? (
+          <ManualElementInspectorPopover
+            key="manual-dock-tray"
+            element={selectedElement}
+            onPatch={handleManualPatch}
+            onReset={handleManualReset}
+            onSelectParent={handleSelectParent}
+            onReorder={handleReorder}
+            onInjectCode={handleInjectCode}
+            onDuplicate={handleManualDuplicate}
+            onDelete={handleManualDelete}
+            onSave={handleManualSave}
+            onClose={closeManualEditor}
+          />
+        ) : null}
+      </AnimatePresence>
 
       {consoleOpen ? (
         <div className="max-h-[180px] min-h-[92px] shrink-0 overflow-y-auto border-t border-[var(--border)] bg-[var(--code-bg)] px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed">
@@ -347,13 +859,11 @@ function PreviewPane() {
         </div>
       ) : null}
 
-      <div className="flex shrink-0 items-center gap-2 border-t border-[var(--border)] px-2.5 py-1.5">
-        <span className="inline-flex min-w-0 items-center gap-1.5 text-[9.5px] text-[var(--faint)]">
-          <Laptop className="size-3 shrink-0" />
-          <span className="truncate">{built.entry ?? t("preview.project")}</span>
-        </span>
-        <span className="ml-auto truncate text-[9px] text-[var(--faint)]">{t("preview.running")}</span>
-      </div>
+      <PreviewStudioBar
+        mode={studioMode}
+        disabled={!built.runnable}
+        onSelectMode={handleSelectStudioMode}
+      />
     </div>
   );
 }
@@ -722,58 +1232,87 @@ function VersionsPane() {
   );
 }
 
-function PanelBody() {
+export function RightPanelBody({ mode = "desktop" }: { mode?: "desktop" | "mobile" }) {
   const t = useT();
   const tab = useUiStore((s) => s.rightTab);
   const setTab = useUiStore((s) => s.setRightTab);
+  const setMobileOpen = useUiStore((s) => s.setMobilePanelOpen);
   const state = usePanelFilesState();
   const files = state.files;
+  const isMobile = mode === "mobile";
+
+  const hidePanelHeader = tab === "preview" && state.studioMode === "manual-edit";
 
   return (
     <PanelContext.Provider value={state}>
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="flex shrink-0 items-center gap-1 border-b border-[var(--border)] px-2 py-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 rounded-[9px] bg-[var(--surface-2)]/60 p-0.5">
-            {(
-              [
-                { value: "preview", label: t("preview.title"), icon: <Eye className="size-3" /> },
-                { value: "files", label: t("preview.files"), icon: <Code2 className="size-3" /> },
-                { value: "versions", label: t("preview.versions"), icon: <History className="size-3" /> },
-              ] as { value: RightTab; label: string; icon: React.ReactNode }[]
-            ).map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => setTab(item.value)}
-                aria-pressed={tab === item.value}
+      <div
+        className={cn(
+          "flex h-full min-h-0 flex-col",
+          isMobile && "pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]",
+        )}
+      >
+        <AnimatePresence initial={false}>
+          {!hidePanelHeader ? (
+            <motion.div
+              key="panel-top-header"
+              initial={{ height: 0, opacity: 0, y: -10 }}
+              animate={{ height: "auto", opacity: 1, y: 0 }}
+              exit={{ height: 0, opacity: 0, y: -10 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+              className="shrink-0 overflow-hidden"
+              style={{ willChange: "height, opacity, transform" }}
+            >
+              <div
+                dir="ltr"
                 className={cn(
-                  "inline-flex h-6 min-w-0 flex-1 items-center justify-center gap-1 rounded-[7px] px-1.5 text-[10.5px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ring)]",
-                  tab === item.value
-                    ? "bg-[var(--surface-1)] text-foreground shadow-xs"
-                    : "text-[var(--faint)] hover:text-foreground",
+                  "flex shrink-0 items-center gap-1.5 border-b border-[var(--border)] px-2 py-1.5",
+                  isMobile && "h-[var(--header-h)] px-3",
                 )}
               >
-                {item.icon}
-                <span className="truncate">{item.label}</span>
-                {item.value === "files" && files.length > 0 ? (
-                  <span className="rounded-full bg-[var(--surface-2)] px-1 text-[9px] tabular-nums text-[var(--faint)]">
-                    {files.length}
-                  </span>
+                {isMobile ? (
+                  <button
+                    type="button"
+                    onClick={() => setMobileOpen(false)}
+                    aria-label={t("common.back")}
+                    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/70 px-2.5 text-[11.5px] font-medium text-foreground transition-colors hover:bg-[var(--surface-2)] active:scale-[0.97]"
+                  >
+                    <ChevronLeft className="size-3.5" />
+                    <span>{t("common.back")}</span>
+                  </button>
                 ) : null}
-              </button>
-            ))}
-          </div>
-          <PanelCloseButton />
-        </div>
+
+                <Tabs
+                  value={tab}
+                  onValueChange={(value) => setTab(value as RightTab)}
+                  className="min-w-0 flex-1"
+                >
+                  <TabsList className="w-full">
+                    <TabsTrigger value="preview" className="flex-1 text-[11px]">
+                      <Eye className="size-3" />
+                      <span className="truncate">{t("preview.title")}</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="files" className="flex-1 text-[11px]">
+                      <Code2 className="size-3" />
+                      <span className="truncate">{t("preview.files")}</span>
+                      {files.length > 0 ? (
+                        <span className="rounded-full bg-[var(--surface-2)] px-1 text-[9px] tabular-nums text-[var(--faint)]">
+                          {files.length}
+                        </span>
+                      ) : null}
+                    </TabsTrigger>
+                    <TabsTrigger value="versions" className="flex-1 text-[11px]">
+                      <History className="size-3" />
+                      <span className="truncate">{t("preview.versions")}</span>
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                {!isMobile ? <PanelCloseButton /> : null}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
         {tab === "preview" ? <PreviewPane /> : tab === "files" ? <FilesPane /> : <VersionsPane />}
-
-        <div className="shrink-0 border-t border-[var(--border)] px-2.5 py-1.5">
-          <p className="flex items-center gap-1 text-[9px] leading-relaxed text-[var(--faint)]">
-            <AlertTriangle className="size-2.5 shrink-0" />
-            {t("preview.srcdocNote")}
-          </p>
-        </div>
       </div>
     </PanelContext.Provider>
   );
@@ -782,7 +1321,6 @@ function PanelBody() {
 function PanelCloseButton() {
   const t = useT();
   const update = useSettingsStore((s) => s.update);
-  const settings = useSettingsStore((s) => s.settings);
   const setMobileOpen = useUiStore((s) => s.setMobilePanelOpen);
 
   return (
@@ -803,27 +1341,15 @@ function PanelCloseButton() {
 export function RightPanel() {
   const t = useT();
   const settings = useSettingsStore((s) => s.settings);
-  const mobileOpen = useUiStore((s) => s.mobilePanelOpen);
-  const setMobileOpen = useUiStore((s) => s.setMobilePanelOpen);
+
+  if (!settings.rightPanelOpen) return null;
 
   return (
-    <>
-      {settings.rightPanelOpen ? (
-        <aside
-          className="relative z-10 hidden w-[360px] shrink-0 flex-col border-l border-[var(--border)] bg-[color-mix(in_oklab,var(--surface-1)_48%,transparent)] backdrop-blur-xl backdrop-saturate-150 xl:flex 2xl:w-[420px]"
-          aria-label={t("preview.title")}
-        >
-          <PanelBody />
-        </aside>
-      ) : null}
-
-      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetContent side="right" className="gap-0 p-0">
-          <SheetTitle className="sr-only">{t("preview.title")}</SheetTitle>
-          <SheetDescription className="sr-only">{t("preview.srcdocNote")}</SheetDescription>
-          <PanelBody />
-        </SheetContent>
-      </Sheet>
-    </>
+    <aside
+      className="relative z-10 hidden w-[360px] shrink-0 flex-col border-l border-[var(--border)] bg-[color-mix(in_oklab,var(--surface-1)_48%,transparent)] backdrop-blur-xl backdrop-saturate-150 xl:flex 2xl:w-[420px]"
+      aria-label={t("preview.title")}
+    >
+      <RightPanelBody mode="desktop" />
+    </aside>
   );
 }

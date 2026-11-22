@@ -1,72 +1,131 @@
 // layout feature: TopBar; change its UI/flow here and keep related state/API calls in sync.
 import {
-  Command,
+  Copy,
+  Cpu,
   FileJson,
   FileText,
-  Languages,
+  HelpCircle,
   Lock,
+  LogIn,
+  LogOut,
   Moon,
   MoreVertical,
+  Palette,
   PanelRight,
   PanelRightClose,
+  Pencil,
+  Pin,
+  Settings,
   Settings2,
   Sun,
-  UserRound,
+  Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Logo } from "@/components/Logo";
+import { AccountCard, type AccountMenuItem, type AccountUser } from "@/components/ui/account-card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { chatToJson, chatToMarkdown, downloadJson, downloadText, safeFilename } from "@/lib/export";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { chatToJson, chatToMarkdown, copyToClipboard, downloadJson, downloadText, safeFilename } from "@/lib/export";
 import { useT } from "@/lib/i18n";
+import { setAccent, useAccent, type Accent } from "@/lib/useAccent";
+import { useIsDesktopPanel } from "@/lib/useMediaQuery";
 import { AppNav } from "@/features/layout/AppNav";
 import { CornerMenu, type CornerMenuSection } from "@/features/layout/CornerMenu";
 import { useCornerMenuSections } from "@/features/layout/cornerMenuItems";
-import { ChatSettingsDialog } from "@/features/chat/ChatSettingsDialog";
-import { activeThread, useChatsStore } from "@/stores/chats";
+import { loadChatSettingsDialog } from "@/lib/preload";
+import { activeThread, isChatPreviewAvailable, useChatsStore } from "@/stores/chats";
+
+const ChatSettingsDialog = React.lazy(loadChatSettingsDialog);
 import { useAuthStore } from "@/stores/auth";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
+const DOCS_URL = ((import.meta.env.VITE_DOCS_URL as string | undefined) ?? "").trim();
+
+const ChatMetaBadge = React.memo(function ChatMetaBadge({
+  chat,
+}: {
+  chat: ReturnType<typeof useChatsStore.getState>["chats"][number] | undefined;
+}) {
+  const t = useT();
+  const streaming = useChatsStore((s) => s.streaming);
+  const messages = useChatsStore((s) => s.messages);
+  const threadLen = React.useMemo(
+    () => (streaming || !chat ? 0 : activeThread(messages, chat).length),
+    [streaming, messages, chat],
+  );
+
+  if (streaming) {
+    return (
+      <span className="hidden items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)] sm:inline-flex">
+        <span className="size-1.5 animate-pulse rounded-full bg-[var(--primary)]" />
+        {t("chat.streaming")}
+      </span>
+    );
+  }
+  if (chat && threadLen > 0) {
+    return (
+      <span className="hidden text-[10.5px] text-[var(--faint)] sm:inline">
+        {threadLen} · {t("nav.chats").toLowerCase()}
+      </span>
+    );
+  }
+  return null;
+});
+
 /*
  * The top bar keeps only what you touch while chatting: the chat title, the
- * model picker and a single overflow menu. Search, the command palette, the
- * theme switch, the preview panel toggle and settings all live inside that
- * menu, so the header stays calm on a phone and on a wide desktop alike.
+ * navigation pill, the left navigation menu (with the bottom account card),
+ * and the right current-conversation menu.
  */
 export function TopBar() {
   const t = useT();
   const view = useUiStore((s) => s.view);
-  const setMobilePanelOpen = useUiStore((s) => s.setMobilePanelOpen);
-  const setSearchOpen = useUiStore((s) => s.setSearchOpen);
-  const setPaletteOpen = useUiStore((s) => s.setPaletteOpen);
+  const setView = useUiStore((s) => s.setView);
+  const isDesktopPanel = useIsDesktopPanel();
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const chatSettingsOpen = useUiStore((s) => s.chatSettingsOpen);
   const setChatSettingsOpen = useUiStore((s) => s.setChatSettingsOpen);
   const setModelPickerOpen = useUiStore((s) => s.setModelPickerOpen);
   const setAuthOpen = useUiStore((s) => s.setAuthOpen);
   const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
+  const authUser = useAuthStore((s) => s.user);
   const signedIn = useAuthStore((s) => s.signedIn);
   const profile = useAuthStore((s) => s.profile);
+  const signOut = useAuthStore((s) => s.signOut);
 
   const chats = useChatsStore((s) => s.chats);
-  const messages = useChatsStore((s) => s.messages);
   const activeChatId = useChatsStore((s) => s.activeChatId);
-  const createChat = useChatsStore((s) => s.createChat);
+  const hasChatMessages = useChatsStore((s) => {
+    if (!s.activeChatId) return false;
+    for (let i = 0; i < s.messages.length; i++) {
+      if (s.messages[i].chatId === s.activeChatId) return true;
+    }
+    return false;
+  });
+  const previewAvailable = useChatsStore((s) => {
+    if (!s.activeChatId) return false;
+    const active = s.chats.find((c) => c.id === s.activeChatId);
+    return isChatPreviewAvailable(active, s.messages);
+  });
   const togglePin = useChatsStore((s) => s.togglePin);
   const renameChat = useChatsStore((s) => s.renameChat);
   const deleteChat = useChatsStore((s) => s.deleteChat);
-  const streaming = useChatsStore((s) => s.streaming);
 
   const settings = useSettingsStore((s) => s.settings);
   const locked = useSettingsStore((s) => s.locked);
-  const toggleTheme = useSettingsStore((s) => s.toggleTheme);
+  const setTheme = useSettingsStore((s) => s.setTheme);
   const update = useSettingsStore((s) => s.update);
+  const accent = useAccent();
 
-  const chat = chats.find((item) => item.id === activeChatId);
+  const chat = React.useMemo(
+    () => chats.find((item) => item.id === activeChatId),
+    [chats, activeChatId],
+  );
 
   const [renameTargetId, setRenameTargetId] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
@@ -75,13 +134,13 @@ export function TopBar() {
   const chatActions = React.useMemo(
     () => ({
       onRename: (id: string) => {
-        const target = chats.find((c) => c.id === id);
+        const target = useChatsStore.getState().chats.find((c) => c.id === id);
         setRenameValue(target?.title ?? "");
         setRenameTargetId(id);
       },
       onDelete: (id: string) => setDeleteTargetId(id),
     }),
-    [chats],
+    [],
   );
   const cornerMenuSections = useCornerMenuSections(chatActions);
   const renameTarget = chats.find((c) => c.id === renameTargetId);
@@ -91,87 +150,201 @@ export function TopBar() {
     view === "providers"
       ? t("providers.title")
       : chat?.title?.trim() || t("chat.newChatTitle");
-  const thread = React.useMemo(() => activeThread(messages, chat ?? null), [messages, chat]);
 
-  const exportChat = (format: "md" | "json") => {
+  const exportChat = React.useCallback((format: "md" | "json") => {
     if (!chat) return;
+    const thread = activeThread(useChatsStore.getState().messages, chat);
     const suffix = safeFilename(chat.title || "chat");
     if (format === "md") downloadText(chatToMarkdown(chat, thread), `${suffix}.md`, "text/markdown;charset=utf-8");
     else downloadJson(chatToJson(chat, thread), `${suffix}.json`);
     toast.success(t("toast.exported"));
-  };
+  }, [chat, t]);
+
+  const copyChat = React.useCallback(async () => {
+    if (!chat) return;
+    const thread = activeThread(useChatsStore.getState().messages, chat);
+    const ok = await copyToClipboard(chatToMarkdown(chat, thread));
+    if (ok) toast.success(t("toast.copied"));
+    else toast.error(t("toast.clipboardFailed"));
+  }, [chat, t]);
 
   const togglePanel = () => {
-    if (window.innerWidth >= 1280) void update({ rightPanelOpen: !settings.rightPanelOpen });
-    else setMobilePanelOpen(true);
+    void update({ rightPanelOpen: !settings.rightPanelOpen });
   };
 
   const menuBrand = (
-    <div className="flex min-w-0 items-center gap-2.5">
-      <Logo size={22} />
-      <span className="min-w-0">
-        <span className="cm-brand-name block">{t("app.name")}</span>
-        <span className="cm-brand-sub">{t("app.tagline")}</span>
-      </span>
+    <div className="flex w-full items-center justify-start py-0.5">
+      <img
+        src="/brand/wordmark.png"
+        alt={t("app.name")}
+        draggable={false}
+        className="h-[38px] w-auto max-w-[236px] select-none object-contain"
+      />
+    </div>
+  );
+
+  const isFa = settings.lang === "fa";
+  const resolvedDark =
+    settings.theme === "dark" ||
+    (settings.theme === "system" &&
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches);
+
+  const appearanceSubmenu = (
+    <div className="space-y-2.5 text-[12px]" dir="ltr">
+      <div>
+        <div className="mb-1.5 text-[10.5px] font-medium text-[var(--muted-foreground)]">
+          {t("settings.theme")}
+        </div>
+        <Tabs
+          value={resolvedDark ? "dark" : "light"}
+          onValueChange={(value) => void setTheme(value as "light" | "dark")}
+        >
+          <TabsList className="w-full">
+            <TabsTrigger value="light" className="flex-1">
+              <Sun />
+              <span>{t("settings.light")}</span>
+            </TabsTrigger>
+            <TabsTrigger value="dark" className="flex-1">
+              <Moon />
+              <span>{t("settings.dark")}</span>
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+
+      <div>
+        <div className="mb-1.5 text-[10.5px] font-medium text-[var(--muted-foreground)]">
+          {isFa ? "رنگ تم" : "Accent"}
+        </div>
+        <Tabs
+          value={accent}
+          onValueChange={(value) => setAccent(value as Accent)}
+        >
+          <TabsList className="w-full">
+            <TabsTrigger value="violet" className="flex-1">
+              <span className="size-2.5 rounded-full bg-[#7c4dff]" aria-hidden="true" />
+              <span>{isFa ? "بنفش" : "Violet"}</span>
+            </TabsTrigger>
+            <TabsTrigger value="ember" className="flex-1">
+              <span className="size-2.5 rounded-full bg-[#e0531a]" aria-hidden="true" />
+              <span>{isFa ? "نارنجی" : "Ember"}</span>
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+
+      <div>
+        <div className="mb-1.5 text-[10.5px] font-medium text-[var(--muted-foreground)]">
+          {t("settings.language")}
+        </div>
+        <Tabs
+          value={settings.lang}
+          onValueChange={(value) => void update({ lang: value as "en" | "fa" })}
+        >
+          <TabsList className="w-full">
+            <TabsTrigger value="en" className="flex-1">
+              English
+            </TabsTrigger>
+            <TabsTrigger value="fa" className="flex-1">
+              فارسی
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
     </div>
   );
 
   const rightSections: CornerMenuSection[] = [
-    ...(view === "chat" && chat
+    ...(view === "chat" && chat && hasChatMessages
       ? [
           {
             id: "session",
             items: [
+              {
+                id: "switch-model",
+                label: t("palette.switchModel"),
+                icon: Cpu,
+                onClick: () => {
+                  if (chat.providerId && chat.modelId) setModelPickerOpen(true);
+                  else setView("providers");
+                },
+              },
               {
                 id: "params",
                 label: t("chat.params"),
                 icon: Settings2,
                 onClick: () => setChatSettingsOpen(true),
               },
+              ...(isDesktopPanel && previewAvailable
+                ? [
+                    {
+                      id: "panel",
+                      label: t("palette.togglePanel"),
+                      icon: settings.rightPanelOpen ? PanelRightClose : PanelRight,
+                      active: settings.rightPanelOpen,
+                      onClick: togglePanel,
+                    },
+                  ]
+                : []),
+            ],
+          },
+          {
+            id: "conversation",
+            items: [
               {
-                id: "panel",
-                label: t("palette.togglePanel"),
-                icon: settings.rightPanelOpen ? PanelRightClose : PanelRight,
-                active: settings.rightPanelOpen,
-                onClick: togglePanel,
+                id: "rename-chat",
+                label: t("common.rename"),
+                icon: Pencil,
+                onClick: () => chatActions.onRename(chat.id),
+              },
+              {
+                id: "pin-chat",
+                label: chat.pinned ? t("common.unpin") : t("common.pin"),
+                icon: Pin,
+                active: chat.pinned,
+                onClick: () => void togglePin(chat.id),
+              },
+              {
+                id: "copy-chat",
+                label: isFa ? "کپی گفتگو" : "Copy conversation",
+                icon: Copy,
+                onClick: () => void copyChat(),
               },
               { id: "export-md", label: t("chat.exportMd"), icon: FileText, onClick: () => exportChat("md") },
               { id: "export-json", label: t("chat.exportJson"), icon: FileJson, onClick: () => exportChat("json") },
+              {
+                id: "delete-chat",
+                label: t("common.delete"),
+                icon: Trash2,
+                hue: 0,
+                onClick: () => chatActions.onDelete(chat.id),
+              },
             ],
           },
         ]
       : []),
-    {
-      id: "account",
-      items: [
-        {
-          id: "account-open",
-          label: signedIn && profile ? t("auth.signedInAs", { email: profile.email }) : t("auth.signIn"),
-          icon: UserRound,
-          onClick: () => {
-            if (signedIn) setAuthOpen(true);
-            else setAuthGateOpen(true);
+    ...(!signedIn
+      ? [
+          {
+            id: "guest",
+            items: [
+              {
+                id: "guest-sign-in",
+                label: t("auth.signIn"),
+                icon: LogIn,
+                onClick: () => setAuthGateOpen(true),
+              },
+              {
+                id: "guest-appearance",
+                label: t("settings.appearance"),
+                icon: Palette,
+                submenu: appearanceSubmenu,
+              },
+            ],
           },
-        },
-      ],
-    },
-    {
-      id: "appearance",
-      items: [
-        {
-          id: "theme",
-          label: t("palette.toggleTheme"),
-          icon: settings.theme === "dark" ? Sun : Moon,
-          onClick: () => void toggleTheme(),
-        },
-        {
-          id: "lang",
-          label: t("palette.toggleLang"),
-          icon: Languages,
-          onClick: () => void update({ lang: settings.lang === "fa" ? "en" : "fa" }),
-        },
-      ],
-    },
+        ]
+      : []),
     ...(locked
       ? [
           {
@@ -190,11 +363,83 @@ export function TopBar() {
       : []),
   ];
 
+  const accountUser: AccountUser | null =
+    signedIn && (authUser || profile)
+      ? {
+          name:
+            authUser?.name ||
+            profile?.displayName ||
+            authUser?.email ||
+            profile?.email ||
+            t("auth.account"),
+          email: authUser?.email || profile?.email || undefined,
+          avatarUrl: authUser?.avatarUrl ?? null,
+        }
+      : null;
+
+  const renderAccountFooter = (closeMenu: () => void) => {
+    const accountItems: AccountMenuItem[] = [
+      {
+        id: "account-settings",
+        label: isFa ? "تنظیمات حساب" : "Account settings",
+        icon: <Settings />,
+        onClick: () => {
+          closeMenu();
+          setAuthOpen(true);
+        },
+      },
+      {
+        id: "appearance",
+        label: t("settings.appearance"),
+        icon: <Palette />,
+        submenu: appearanceSubmenu,
+      },
+      ...(DOCS_URL
+        ? [
+            {
+              id: "help",
+              label: isFa ? "راهنما" : "Help",
+              icon: <HelpCircle />,
+              href: DOCS_URL,
+              onClick: () => closeMenu(),
+            },
+          ]
+        : []),
+      {
+        id: "sign-out",
+        label: t("auth.signOut"),
+        icon: <LogOut />,
+        danger: true,
+        separatorBefore: true,
+        onClick: () => {
+          closeMenu();
+          void signOut();
+        },
+      },
+    ];
+
+    return (
+      <AccountCard
+        user={accountUser}
+        items={accountItems}
+        onSignIn={() => {
+          closeMenu();
+          setAuthGateOpen(true);
+        }}
+      />
+    );
+  };
+
   return (
     <>
     <header className="pointer-events-none absolute inset-x-0 top-0 z-30 grid h-[var(--header-h)] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-2.5 pt-[env(safe-area-inset-top,0px)] sm:px-4">
       <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-        <CornerMenu sections={cornerMenuSections} label={t("nav.more")} header={menuBrand} />
+        <CornerMenu
+          sections={cornerMenuSections}
+          label={t("nav.more")}
+          header={menuBrand}
+          footer={renderAccountFooter}
+        />
 
         <div className="flex min-w-0 items-center gap-2">
           {view === "chat" ? (
@@ -202,16 +447,7 @@ export function TopBar() {
               <h1 className="min-w-0 max-w-full text-[13px] font-semibold tracking-[-0.01em] text-foreground sr-only sm:not-sr-only sm:max-w-[28rem]">
                 <span className="block truncate">{title}</span>
               </h1>
-              {streaming ? (
-                <span className="hidden items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)] sm:inline-flex">
-                  <span className="size-1.5 animate-pulse rounded-full bg-[var(--primary)]" />
-                  {t("chat.streaming")}
-                </span>
-              ) : chat && thread.length > 0 ? (
-                <span className="hidden text-[10.5px] text-[var(--faint)] sm:inline">
-                  {thread.length} · {t("nav.chats").toLowerCase()}
-                </span>
-              ) : null}
+              <ChatMetaBadge chat={chat} />
             </>
           ) : (
             <>
@@ -232,16 +468,24 @@ export function TopBar() {
         <AppNav />
       </div>
 
-      <div className="pointer-events-auto flex min-w-0 items-center justify-end gap-1">
-        <CornerMenu
-          sections={rightSections}
-          label={t("nav.more")}
-          anchor="right"
-          icon={MoreVertical}
-          header={menuBrand}
-        />
+      <div className="pointer-events-auto flex min-w-0 items-center justify-end gap-1.5">
+        {rightSections.length > 0 ? (
+          <div className="right-menu-enter">
+            <CornerMenu
+              sections={rightSections}
+              label={t("nav.more")}
+              anchor="right"
+              icon={MoreVertical}
+              header={menuBrand}
+            />
+          </div>
+        ) : null}
       </div>
-      <ChatSettingsDialog open={chatSettingsOpen} onOpenChange={setChatSettingsOpen} />
+      {chatSettingsOpen ? (
+        <React.Suspense fallback={null}>
+          <ChatSettingsDialog open={chatSettingsOpen} onOpenChange={setChatSettingsOpen} />
+        </React.Suspense>
+      ) : null}
     </header>
 
     <Dialog open={!!renameTargetId} onOpenChange={(open) => !open && setRenameTargetId(null)}>

@@ -2,49 +2,96 @@
 import * as React from "react";
 import { Toaster, toast } from "sonner";
 import { ChatView } from "@/app/ChatView";
-import { SmokeLogin } from "@/components/ui/smoke-login";
 import { resetProvidersOnce } from "@/db/defaults";
 import HalftoneFlowHero from "@/components/ui/halftone-flow-hero";
 import { ArrowLeft } from "lucide-react";
 import { GlassIntro } from "@/features/intro/GlassIntro";
 import { HeaderBlur } from "@/features/layout/HeaderBlur";
-import { RightPanel } from "@/features/layout/RightPanel";
+import { MobilePreviewPager } from "@/features/layout/MobilePreviewPager";
 import { TopBar } from "@/features/layout/TopBar";
 import { UnlockGate } from "@/features/settings/UnlockGate";
 import { localizeError } from "@/lib/errors";
+import {
+  loadAuthPanel,
+  loadCommandPalette,
+  loadModelPicker,
+  loadProvidersPage,
+  loadProviderWizard,
+  loadRightPanel,
+  loadRightPanelBody,
+  loadSearchDialog,
+  loadSettingsDialog,
+  loadSmokeLogin,
+  startBackgroundPreload,
+} from "@/lib/preload";
 import { useAccent } from "@/lib/useAccent";
+import { useIsDesktopPanel } from "@/lib/useMediaQuery";
 import { useDocumentLanguage, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { useChatsStore, activeThread } from "@/stores/chats";
+import { useChatsStore, activeThread, isChatPreviewAvailable } from "@/stores/chats";
 import { useAuthStore } from "@/stores/auth";
 import { useCatalogStore } from "@/stores/catalog";
+import { useRoutersStore } from "@/stores/routers";
 import { useProvidersStore } from "@/stores/providers";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
-// Heavy, on-demand surfaces: settings, providers, palette, search, model picker
-// and the wizard stay out of the entry chunk until the user first needs them.
-const CommandPalette = React.lazy(() =>
-  import("@/features/layout/CommandPalette").then((m) => ({ default: m.CommandPalette })),
-);
-const SearchDialog = React.lazy(() =>
-  import("@/features/layout/SearchDialog").then((m) => ({ default: m.SearchDialog })),
-);
-const ModelPicker = React.lazy(() =>
-  import("@/features/models/ModelPicker").then((m) => ({ default: m.ModelPicker })),
-);
-const ProvidersPage = React.lazy(() =>
-  import("@/features/providers/ProvidersPage").then((m) => ({ default: m.ProvidersPage })),
-);
-const ProviderWizard = React.lazy(() =>
-  import("@/features/providers/ProviderWizard").then((m) => ({ default: m.ProviderWizard })),
-);
-const SettingsDialog = React.lazy(() =>
-  import("@/features/settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog })),
-);
-const AuthPanel = React.lazy(() =>
-  import("@/features/auth/AuthPanel").then((m) => ({ default: m.AuthPanel })),
-);
+// Heavy, on-demand surfaces stay out of the entry chunk, and startBackgroundPreload()
+// warms them right after first paint so opening any section feels instant.
+const CommandPalette = React.lazy(loadCommandPalette);
+const SearchDialog = React.lazy(loadSearchDialog);
+const ModelPicker = React.lazy(loadModelPicker);
+const ProvidersPage = React.lazy(loadProvidersPage);
+const ProviderWizard = React.lazy(loadProviderWizard);
+const SettingsDialog = React.lazy(loadSettingsDialog);
+const AuthPanel = React.lazy(loadAuthPanel);
+const SmokeLogin = React.lazy(loadSmokeLogin);
+const RightPanel = React.lazy(loadRightPanel);
+const RightPanelBody = React.lazy(loadRightPanelBody);
+
+const INTRO_SEEN_KEY = "openharness.intro.seen";
+
+function hasSeenIntroThisSession(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.sessionStorage.getItem(INTRO_SEEN_KEY) === "1") return true;
+  } catch {
+    // Fall back to window.name when sessionStorage is blocked (e.g. sandboxed iframe).
+  }
+  try {
+    return typeof window.name === "string" && window.name.includes(INTRO_SEEN_KEY);
+  } catch {
+    return false;
+  }
+}
+
+function markIntroSeenThisSession(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(INTRO_SEEN_KEY, "1");
+  } catch {
+    // Ignore storage errors; window.name fallback below still covers reloads in this tab.
+  }
+  try {
+    if (typeof window.name === "string" && !window.name.includes(INTRO_SEEN_KEY)) {
+      window.name = window.name ? `${window.name}|${INTRO_SEEN_KEY}` : INTRO_SEEN_KEY;
+    }
+  } catch {
+    // Ignore window.name access errors.
+  }
+}
+
+function ViewLoadingFallback() {
+  return (
+    <div
+      className="flex flex-1 items-center justify-center p-8"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <span className="size-6 animate-spin rounded-full border-2 border-[var(--border)] border-t-foreground/80" />
+    </div>
+  );
+}
 
 /**
  * Returns true once any of the flags has been true. Used to mount a lazy
@@ -71,7 +118,7 @@ export default function App() {
 
   const loadProviders = useProvidersStore((s) => s.load);
   const loadChats = useChatsStore((s) => s.load);
-  const createChat = useChatsStore((s) => s.createChat);
+  const startNewChat = useChatsStore((s) => s.startNewChat);
 
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
@@ -86,6 +133,8 @@ export default function App() {
   const wizardOpen = useUiStore((s) => s.wizardOpen);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const authOpen = useUiStore((s) => s.authOpen);
+  const mobilePanelOpen = useUiStore((s) => s.mobilePanelOpen);
+  const isDesktopPanel = useIsDesktopPanel();
 
   const showSearch = useLatched(searchOpen);
   const showPalette = useLatched(paletteOpen);
@@ -93,8 +142,8 @@ export default function App() {
   const showWizard = useLatched(wizardOpen);
   const showSettings = useLatched(settingsOpen);
   const showAuth = useLatched(authOpen);
+  const showRightPanel = useLatched(settings.rightPanelOpen, mobilePanelOpen);
 
-  const authReady = useAuthStore((s) => s.ready);
   const signedIn = useAuthStore((s) => s.signedIn);
   const authGateOpen = useUiStore((s) => s.authGateOpen);
   const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
@@ -103,7 +152,14 @@ export default function App() {
   // the product. The page also never shows for a signed-in visitor.
   const showLogin = !signedIn && authGateOpen;
   const closeAuthGate = React.useCallback(() => setAuthGateOpen(false), [setAuthGateOpen]);
-  const googleSignIn = React.useCallback(() => useAuthStore.getState().signInWithGoogle(), []);
+  const googleSignIn = React.useCallback(async () => {
+    const wasSignedIn = useAuthStore.getState().signedIn;
+    await useAuthStore.getState().signInWithGoogle();
+    if (!wasSignedIn && useAuthStore.getState().signedIn) {
+      setAuthGateOpen(false);
+      toast.success(t("auth.welcomeCreditsToast"));
+    }
+  }, [setAuthGateOpen, t]);
 
   // Escape leaves the sign-up page, like any other overlay.
   React.useEffect(() => {
@@ -118,31 +174,71 @@ export default function App() {
   const chats = useChatsStore((s) => s.chats);
   const messages = useChatsStore((s) => s.messages);
   const activeChatId = useChatsStore((s) => s.activeChatId);
+  const activeChat = React.useMemo(
+    () => chats.find((item) => item.id === activeChatId) ?? null,
+    [chats, activeChatId],
+  );
   // The colorful background belongs to the landing state. As soon as a real
   // conversation exists it settles into a dark, quiet canvas behind the thread,
   // which keeps the text readable and the glass composer calm.
-  const inConversation = React.useMemo(() => {
-    const chat = chats.find((item) => item.id === activeChatId) ?? null;
-    return view === "chat" && activeThread(messages, chat).length > 0;
-  }, [chats, messages, activeChatId, view]);
+  const inConversation = React.useMemo(
+    () => view === "chat" && activeThread(messages, activeChat).length > 0,
+    [messages, activeChat, view],
+  );
+  const previewAvailable = React.useMemo(
+    () => view === "chat" && isChatPreviewAvailable(activeChat, messages),
+    [view, activeChat, messages],
+  );
+
+  React.useEffect(() => {
+    if ((isDesktopPanel || !previewAvailable) && mobilePanelOpen) {
+      setMobilePanelOpen(false);
+    }
+  }, [isDesktopPanel, previewAvailable, mobilePanelOpen, setMobilePanelOpen]);
 
   const [booted, setBooted] = React.useState(false);
-  // The glass intro owns the first seconds of the session. The app boots behind
-  // it and is revealed as the overlay fades out.
-  const [introDone, setIntroDone] = React.useState(false);
+  // The glass intro plays once per browser tab session; reloads or redirects
+  // within the same tab skip it until the user closes and reopens the site.
+  const [introDone, setIntroDone] = React.useState(hasSeenIntroThisSession);
+  React.useEffect(() => {
+    if (!introDone) markIntroSeenThisSession();
+  }, [introDone]);
+  const finishIntro = React.useCallback(() => {
+    markIntroSeenThisSession();
+    setIntroDone(true);
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
+    const stopPreload = startBackgroundPreload();
+
+    // Start remote auth + catalog hydration in parallel without blocking local
+    // IndexedDB boot or initial paint.
+    void useAuthStore
+      .getState()
+      .init()
+      .then(() => {
+        if (!cancelled) {
+          useCatalogStore.getState().init();
+          void useRoutersStore.getState().hydrate();
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          useCatalogStore.getState().init();
+          void useRoutersStore.getState().hydrate();
+        }
+      });
+
     const boot = async () => {
       try {
-        await loadSettings();
-        // One-time wipe: every provider is removed and nothing is seeded back,
-        // so a fresh browser and an existing one both start with an empty list.
-        await resetProvidersOnce();
-        await loadProviders();
-        await useAuthStore.getState().init();
-        useCatalogStore.getState().init();
-        await loadChats();
+        await Promise.all([
+          loadSettings(),
+          // One-time wipe: every provider is removed and nothing is seeded back,
+          // so a fresh browser and an existing one both start with an empty list.
+          resetProvidersOnce().then(() => loadProviders()),
+          loadChats(),
+        ]);
       } catch (error) {
         console.error("Bootstrap failed:", error);
         toast.error(t("error.generic"));
@@ -153,6 +249,7 @@ export default function App() {
     void boot();
     return () => {
       cancelled = true;
+      stopPreload();
     };
     // Boot exactly once; the stores are singletons.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -200,7 +297,8 @@ export default function App() {
       }
       if (key === "o" && event.shiftKey) {
         event.preventDefault();
-        void createChat().then(() => setView("chat"));
+        startNewChat();
+        setView("chat");
         return;
       }
       if (key === "/") {
@@ -222,6 +320,9 @@ export default function App() {
       }
       if (key === "p" && event.shiftKey) {
         event.preventDefault();
+        const chatState = useChatsStore.getState();
+        const currentChat = chatState.chats.find((c) => c.id === chatState.activeChatId) ?? null;
+        if (!isChatPreviewAvailable(currentChat, chatState.messages)) return;
         if (window.innerWidth >= 1280) void update({ rightPanelOpen: !current.rightPanelOpen });
         else setMobilePanelOpen(true);
       }
@@ -229,7 +330,7 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
-    createChat,
+    startNewChat,
     requestComposerFocus,
     setMobilePanelOpen,
     setModelPickerOpen,
@@ -271,10 +372,12 @@ export default function App() {
 
   return (
     <>
-      {booted && authReady ? (
+      {booted ? (
         showLogin ? (
           <div className="relative min-h-dvh w-full">
-            <SmokeLogin onGoogleSignIn={googleSignIn} />
+            <React.Suspense fallback={<ViewLoadingFallback />}>
+              <SmokeLogin onGoogleSignIn={googleSignIn} />
+            </React.Suspense>
             <button
               type="button"
               onClick={closeAuthGate}
@@ -299,31 +402,72 @@ export default function App() {
         >
           {showBackground}
 
-          <div className="relative z-10 flex min-w-0 flex-1 flex-col">
-            <TopBar />
-            <div className="flex min-h-0 flex-1">
-              <main
-                className={cn(
-                  "relative flex min-h-0 min-w-0 flex-1 flex-col",
-                  // Chat pads itself inside the scroller so messages slide under
-                  // the header (and the blur); the provider page is a normal
-                  // scroller and just needs the header height reserved.
-                  view === "providers" && "pt-[var(--header-h)]",
-                )}
-                aria-label={view === "chat" ? t("nav.chats") : t("providers.title")}
-              >
-                {view === "chat" ? (
-                  <ChatView />
-                ) : (
+          {!isDesktopPanel ? (
+            <MobilePreviewPager
+              enabled={view === "chat" && previewAvailable}
+              open={mobilePanelOpen}
+              onOpenChange={setMobilePanelOpen}
+              dir="ltr"
+              main={
+                <>
+                  <TopBar />
+                  <div className="flex min-h-0 flex-1">
+                    <main
+                      className={cn(
+                        "relative flex min-h-0 min-w-0 flex-1 flex-col",
+                        view === "providers" && "pt-[calc(var(--header-h)+36px)]",
+                      )}
+                      aria-label={view === "chat" ? t("nav.chats") : t("providers.title")}
+                    >
+                      {view === "chat" ? (
+                        <ChatView />
+                      ) : (
+                        <React.Suspense fallback={<ViewLoadingFallback />}>
+                          <ProvidersPage />
+                        </React.Suspense>
+                      )}
+                      <HeaderBlur />
+                    </main>
+                  </div>
+                </>
+              }
+              preview={
+                <React.Suspense fallback={<ViewLoadingFallback />}>
+                  <RightPanelBody mode="mobile" />
+                </React.Suspense>
+              }
+            />
+          ) : (
+            <div className="relative z-10 flex min-w-0 flex-1 flex-col">
+              <TopBar />
+              <div className="flex min-h-0 flex-1">
+                <main
+                  className={cn(
+                    "relative flex min-h-0 min-w-0 flex-1 flex-col",
+                    // Chat pads itself inside the scroller so messages slide under
+                    // the header (and the blur); the provider page is a normal
+                    // scroller and just needs the header height reserved.
+                    view === "providers" && "pt-[calc(var(--header-h)+36px)]",
+                  )}
+                  aria-label={view === "chat" ? t("nav.chats") : t("providers.title")}
+                >
+                  {view === "chat" ? (
+                    <ChatView />
+                  ) : (
+                    <React.Suspense fallback={<ViewLoadingFallback />}>
+                      <ProvidersPage />
+                    </React.Suspense>
+                  )}
+                  <HeaderBlur />
+                </main>
+                {previewAvailable && showRightPanel ? (
                   <React.Suspense fallback={null}>
-                    <ProvidersPage />
+                    <RightPanel />
                   </React.Suspense>
-                )}
-                <HeaderBlur />
-              </main>
-              {view === "chat" ? <RightPanel /> : null}
+                ) : null}
+              </div>
             </div>
-          </div>
+          )}
 
           <React.Suspense fallback={null}>
             {showSearch ? <SearchDialog /> : null}
@@ -353,7 +497,7 @@ export default function App() {
         )
       ) : null}
 
-      {!introDone ? <GlassIntro ready={booted} onFinish={() => setIntroDone(true)} /> : null}
+      {!introDone ? <GlassIntro ready={booted} onFinish={finishIntro} /> : null}
     </>
   );
 }

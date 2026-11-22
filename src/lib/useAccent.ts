@@ -12,6 +12,18 @@ export function readAccent(): Accent {
   }
 }
 
+/** Updates <html data-accent> and persists the choice for this visit and next. */
+export function setAccent(accent: Accent): void {
+  if (typeof document === "undefined") return;
+  document.documentElement.setAttribute("data-accent", accent);
+  try {
+    window.sessionStorage.setItem("oh-accent", accent);
+    window.localStorage.setItem("oh-accent-last", accent);
+  } catch {
+    /* ignore storage limits in private mode */
+  }
+}
+
 /**
  * React-side view of the accent theme, for consumers that need JS values
  * (shader uniforms, canvas palettes). Storage stays in /public/accent.js;

@@ -1,5 +1,5 @@
 // models feature: ModelPicker; change its UI/flow here and keep related state/API calls in sync.
-import { Check, Cpu, Search } from "lucide-react";
+import { Check, Coins, Cpu, Lock, Route, Search } from "lucide-react";
 import * as React from "react";
 import { CapabilityChips } from "@/components/CapabilityChips";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -12,12 +12,14 @@ import { isBundledProvider, providerDisplayName } from "@/lib/bundled";
 import { modelIdentityKeys } from "@/lib/modelRoutes";
 import { useT } from "@/lib/i18n";
 import { latestPing } from "@/lib/ping";
-import { effectiveTier } from "@/lib/registry";
+import { effectiveTier, tierSortRank } from "@/lib/registry";
 import { formatTokens } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth";
 import { useChatsStore } from "@/stores/chats";
 import { useAllModels, useAllProviders } from "@/stores/catalog";
 import { useProvidersStore } from "@/stores/providers";
+import { buildCombinedRouters, useRoutersStore } from "@/stores/routers";
 import { useUiStore } from "@/stores/ui";
 import type { AIModel, Provider } from "@/lib/types";
 
@@ -48,8 +50,16 @@ export function ModelPicker() {
   const open = useUiStore((s) => s.modelPickerOpen);
   const setOpen = useUiStore((s) => s.setModelPickerOpen);
   const setView = useUiStore((s) => s.setView);
+  const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
+  const signedIn = useAuthStore((s) => s.signedIn);
   const providers = useAllProviders();
   const models = useAllModels();
+  const publicRouters = useRoutersStore((s) => s.publicRouters);
+  const localRouters = useRoutersStore((s) => s.localRouters);
+  const combinedRouters = React.useMemo(
+    () => buildCombinedRouters(publicRouters, localRouters, providers, models),
+    [publicRouters, localRouters, providers, models],
+  );
   const chats = useChatsStore((s) => s.chats);
   const activeChatId = useChatsStore((s) => s.activeChatId);
   const setChatModel = useChatsStore((s) => s.setChatModel);
@@ -64,32 +74,61 @@ export function ModelPicker() {
   const groups = React.useMemo(() => {
     // A logical model may be served by several gateways. Show it once and let
     // the send path queue the other gateways as automatic fallbacks.
+    // Free models always appear FIRST at the top of each provider group.
     const seen = new Set<string>();
     const out: {
       key: string;
       name: string;
       provider: Provider;
-      entries: { provider: Provider; model: AIModel }[];
+      userAdded: boolean;
+      freeCount: number;
+      paidCount: number;
+      entries: { provider: Provider; model: AIModel; tierRank: number }[];
     }[] = [];
     const byName = new Map<string, (typeof out)[number]>();
     for (const provider of enabledProviders) {
       const name = providerDisplayName(provider);
+      const userAdded = !isBundledProvider(provider) && !provider.managed;
       const providerModels = enabledModels
         .filter((m) => m.providerId === provider.id)
-        .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order);
+        .sort(
+          (a, b) =>
+            tierSortRank(effectiveTier(a, provider)) - tierSortRank(effectiveTier(b, provider)) ||
+            Number(b.favorite) - Number(a.favorite) ||
+            a.order - b.order,
+        );
       for (const model of providerModels) {
         const identity = modelIdentityKeys(model)[0] ?? model.id;
         if (seen.has(identity)) continue;
         seen.add(identity);
         let group = byName.get(name);
         if (!group) {
-          group = { key: name, name, provider, entries: [] };
+          group = { key: name, name, provider, userAdded, freeCount: 0, paidCount: 0, entries: [] };
           byName.set(name, group);
           out.push(group);
         }
-        group.entries.push({ provider, model });
+        const tier = effectiveTier(model, provider);
+        if (tier === "free") group.freeCount += 1;
+        else if (tier === "paid") group.paidCount += 1;
+        group.entries.push({ provider, model, tierRank: tierSortRank(tier) });
       }
     }
+    // Sort inside every merged group with free models first, and put groups
+    // that have free models ahead of paid-only groups (respecting favorites).
+    for (const group of out) {
+      group.entries.sort(
+        (a, b) =>
+          a.tierRank - b.tierRank ||
+          Number(b.model.favorite) - Number(a.model.favorite) ||
+          a.model.order - b.model.order,
+      );
+    }
+    out.sort(
+      (a, b) =>
+        Number(b.provider.favorite) - Number(a.provider.favorite) ||
+        Number(b.freeCount > 0) - Number(a.freeCount > 0) ||
+        a.provider.order - b.provider.order,
+    );
     return out;
   }, [enabledProviders, enabledModels]);
 
@@ -106,10 +145,30 @@ export function ModelPicker() {
             <Cpu className="size-4 text-[var(--primary)]" />
             {t("models.pickerTitle")}
           </DialogTitle>
-          <DialogDescription className="text-[11.5px]">{t("models.tierSource")}</DialogDescription>
+          <DialogDescription className="sr-only">{t("models.pickerTitle")}</DialogDescription>
         </DialogHeader>
 
-        {groups.length === 0 ? (
+        {!signedIn ? (
+          <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
+            <span className="grid size-11 place-items-center rounded-[14px] border border-[var(--border)] bg-[var(--surface-2)]">
+              <Lock className="size-5 text-[var(--primary)]" />
+            </span>
+            <p className="text-[14px] font-medium">{t("auth.signInToUnlockTitle")}</p>
+            <p className="max-w-[360px] text-[12.5px] text-[var(--muted-foreground)]">
+              {t("auth.signInToUnlockDesc")}
+            </p>
+            <Button
+              size="sm"
+              onClick={() => {
+                setOpen(false);
+                setAuthGateOpen(true);
+              }}
+            >
+              <Coins className="size-3.5" />
+              {t("auth.signInGetCredits")}
+            </Button>
+          </div>
+        ) : groups.length === 0 && combinedRouters.length === 0 ? (
           <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
             <span className="grid size-11 place-items-center rounded-[14px] border border-[var(--border)] bg-[var(--surface-2)]">
               <Cpu className="size-5 text-[var(--faint)]" />
@@ -129,8 +188,56 @@ export function ModelPicker() {
           <Command shouldFilter className="bg-transparent">
             <CommandInput placeholder={t("models.pickerSearch")} aria-label={t("models.pickerSearch")} />
             <CommandList className="max-h-[min(56vh,480px)]">
-              {groups.map((group) => (
-                <CommandGroup key={group.key} heading={group.name}>
+              {combinedRouters.length > 0 ? (
+                <CommandGroup heading={t("router.section")}>
+                  {combinedRouters.map((router) => {
+                    const empty = router.activeMemberCount === 0;
+                    const active = chat?.modelId === router.selectionId;
+                    return (
+                      <CommandItem
+                        key={router.id}
+                        value={`router ${router.name} ${router.providerName}`}
+                        onSelect={() => {
+                          if (empty) return;
+                          void setChatModel("router", router.selectionId);
+                          setOpen(false);
+                        }}
+                        disabled={empty}
+                        className={cn("gap-2.5 rounded-[10px] py-2", empty && "opacity-60")}
+                        aria-current={active}
+                      >
+                        <span className="grid size-[26px] shrink-0 place-items-center rounded-[8px] border border-[var(--border)] bg-[var(--primary)]/10 text-[var(--primary)]">
+                          <Route className="size-3.5" />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate text-[12.5px] font-medium text-foreground">
+                              {router.name}
+                            </span>
+                            <Badge variant="primary">{t("router.badge")}</Badge>
+                          </span>
+                          <span className="text-[10.5px] text-[var(--faint)]">
+                            {empty
+                              ? t("router.disabledEmpty")
+                              : t("router.activeCount", { n: router.activeMemberCount })}
+                          </span>
+                        </span>
+                        {active ? <Check className="size-3.5 text-[var(--primary)]" /> : null}
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ) : null}
+              {groups.map((group) => {
+                const tierParts: string[] = [];
+                if (group.freeCount > 0) tierParts.push(`${group.freeCount} ${t("models.free")}`);
+                if (group.paidCount > 0) tierParts.push(`${group.paidCount} ${t("models.paid")}`);
+                const heading =
+                  group.userAdded && tierParts.length > 0
+                    ? `${group.name} · ${tierParts.join(" · ")}`
+                    : group.name;
+                return (
+                <CommandGroup key={group.key} heading={heading}>
                   {group.entries.map(({ provider, model }) => {
                     const tier = effectiveTier(model, provider);
                     const active = chat?.modelId === model.id && chat?.providerId === provider.id;
@@ -175,7 +282,8 @@ export function ModelPicker() {
                     );
                   })}
                 </CommandGroup>
-              ))}
+                );
+              })}
             </CommandList>
             <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] px-3 py-2">
               <span className="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--faint)]">

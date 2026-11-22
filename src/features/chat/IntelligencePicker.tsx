@@ -1,9 +1,9 @@
 // chat feature: IntelligencePicker; change its UI/flow here and keep related state/API calls in sync.
 import { Brain, ChevronDown } from "lucide-react";
 import * as React from "react";
+import { GlassButton } from "@/components/ui/glass-button";
 import { MorphMenu, type MorphMenuItem } from "@/components/ui/morph-menu";
 import { useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
 import type { ChatParams } from "@/lib/types";
 
 export type ReasoningEffort = ChatParams["reasoningEffort"];
@@ -49,23 +49,17 @@ export function IntelligencePicker({
       align="end"
       width={228}
       trigger={(props) => (
-        <button
+        <GlassButton
           {...props}
-          type="button"
+          variant="pill"
+          active={Boolean(value)}
           aria-label={t("chat.intelligence")}
-          className={cn(
-            "inline-flex h-[30px] shrink-0 items-center gap-1.5 rounded-[9px] px-2 text-[12px] font-medium transition-colors duration-150",
-            "text-[color-mix(in_oklab,var(--foreground)_55%,transparent)]",
-            "hover:bg-[color-mix(in_oklab,var(--foreground)_10%,transparent)] hover:text-[color-mix(in_oklab,var(--foreground)_90%,transparent)]",
-            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-            value && "text-[var(--primary)] hover:text-[var(--primary)]",
-          )}
         >
-          <Brain size={14} strokeWidth={1.75} aria-hidden="true" />
-          <span className="hidden text-[var(--faint)] lg:inline">{t("chat.intelligence")}</span>
-          <span className="max-[370px]:hidden">{effortLabel}</span>
-          <ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" className="opacity-60" />
-        </button>
+          <Brain size={14} strokeWidth={1.75} className="ppc-pill-ic" aria-hidden="true" />
+          <span className="hidden opacity-75 lg:inline">{t("chat.intelligence")}</span>
+          <span className="max-[440px]:hidden">{effortLabel}</span>
+          <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" className="ppc-chev" />
+        </GlassButton>
       )}
     />
   );

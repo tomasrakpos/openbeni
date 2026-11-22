@@ -1,6 +1,8 @@
 // Shared server logic providerKeys; update API callers when changing its contract.
 import { decryptSecret } from "./crypto";
 import { eq, sbJson, type SupabaseEnv } from "./supabase";
+import { scrubSecretText, stripStreamOptions } from "./upstream";
+import { safeFetch } from "./urlGuard";
 import type { AuthEnv } from "./auth";
 
 export type ApiFormat = "openai" | "anthropic" | "gemini" | "custom";
@@ -207,16 +209,39 @@ export async function callWithRotation(
 
     let response: Response;
     try {
-      response = await fetch(request.url, {
-        ...request.init,
-        redirect: "manual",
-        signal: AbortSignal.timeout(45_000),
-      });
-    } catch {
-      log(`key ${index}: timeout`);
-      void markKeyFailure(env, key, "timeout", "Request timed out.");
-      last = { status: 503, message: "The provider did not respond in time. Please retry." };
+      response = await safeFetch(new URL(request.url), request.init, { timeoutMs: 45_000 });
+    } catch (err) {
+      const isTimeout =
+        err instanceof Error &&
+        (err.name === "TimeoutError" || err.name === "AbortError" || /timed out/i.test(err.message));
+      const reason = isTimeout ? "timeout" : "server";
+      const errMsg = isTimeout ? "Request timed out." : "Provider host unreachable.";
+      log(`key ${index}: ${reason}`);
+      void markKeyFailure(env, key, reason, errMsg);
+      last = {
+        status: isTimeout ? 504 : 502,
+        message: isTimeout
+          ? "The provider did not respond in time. Please retry."
+          : "Could not reach the provider endpoint. Please retry.",
+      };
       continue;
+    }
+
+    // Retry once without `stream_options` if an OpenAI-compatible gateway rejects
+    // it with HTTP 400/422 — without burning or cooling down the API key.
+    if (!response.ok && (response.status === 400 || response.status === 422)) {
+      const stripped = stripStreamOptions(request.init);
+      if (stripped) {
+        const preview = await response.clone().text().catch(() => "");
+        if (/stream_options|extra_forbidden|unrecognized|unknown field|additional properties/i.test(preview)) {
+          try {
+            await response.body?.cancel().catch(() => undefined);
+            response = await safeFetch(new URL(request.url), stripped, { timeoutMs: 45_000 });
+          } catch {
+            // Fall through to standard error handling below.
+          }
+        }
+      }
     }
 
     if (response.ok) {
@@ -226,7 +251,7 @@ export async function callWithRotation(
     }
 
     const text = await response.text().catch(() => "");
-    const message = extractMessage(text) || `HTTP ${response.status}`;
+    const message = extractMessage(text, plain) || `HTTP ${response.status}`;
     if (!isRetryable(response.status, message)) {
       return { failure: { status: response.status, message }, usedKeys: attempts };
     }
@@ -237,30 +262,43 @@ export async function callWithRotation(
     last = { status: response.status, message };
   }
 
+  const finalStatus = last?.status === 504 ? 504 : 503;
+  const finalMessage =
+    last?.status === 401 || last?.status === 403
+      ? "The provider rejected the configured API keys. Check the provider credentials in the admin panel."
+      : last?.status === 429
+        ? "This model is currently rate-limited by the upstream provider. Please retry shortly."
+        : last?.status === 504
+          ? "The upstream provider timed out. Please retry shortly."
+          : "This model is temporarily unavailable. Please try again in a few minutes.";
+
   return {
     failure: {
-      status: 503,
-      message:
-        last?.status === 401 || last?.status === 403
-          ? "This model is temporarily unavailable. Please try again in a few minutes."
-          : "This model is temporarily unavailable. Please try again in a few minutes.",
+      status: finalStatus,
+      message: finalMessage,
     },
     usedKeys: attempts,
   };
 }
 
-function extractMessage(text: string): string {
+function extractMessage(text: string, activeKey?: string): string {
   if (!text) return "";
+  let raw = "";
   try {
     const parsed = JSON.parse(text) as {
       error?: { message?: string } | string;
       message?: string;
     };
-    if (typeof parsed.error === "string") return parsed.error.slice(0, 300);
-    if (parsed.error && typeof parsed.error.message === "string") return parsed.error.message.slice(0, 300);
-    if (typeof parsed.message === "string") return parsed.message.slice(0, 300);
+    if (typeof parsed.error === "string") raw = parsed.error.slice(0, 300);
+    else if (parsed.error && typeof parsed.error.message === "string") raw = parsed.error.message.slice(0, 300);
+    else if (typeof parsed.message === "string") raw = parsed.message.slice(0, 300);
+    else raw = text.slice(0, 300);
   } catch {
-    return text.slice(0, 300);
+    raw = text.slice(0, 300);
   }
-  return text.slice(0, 300);
+  let safe = scrubSecretText(raw);
+  if (activeKey && activeKey.length >= 6) {
+    safe = safe.split(activeKey).join("[redacted]");
+  }
+  return safe;
 }

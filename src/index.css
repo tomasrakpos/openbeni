@@ -1,14 +1,23 @@
 @import "tailwindcss";
-@import "katex/dist/katex.min.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Crisp square-grid pixel digits (Geist Pixel) scoped strictly to 0–9 */
+@font-face {
+  font-family: "Geist Pixel Digits";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/geist-pixel/files/geist-pixel-latin-elsh-normal.woff2") format("woff2");
+  unicode-range: U+0030-0039;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Design tokens                                                      */
 /* ------------------------------------------------------------------ */
 :root {
   --radius: 16px;
-  --font-sans: "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Pixel Digits", "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
 
   --background: #f6f7fb;
@@ -176,7 +185,11 @@
 }
 
 @theme inline {
-  --font-sans: "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Pixel Digits", "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-weight-normal: 540;
+  --font-weight-medium: 620;
+  --font-weight-semibold: 680;
+  --font-weight-bold: 700;
   --color-background: var(--background);
   --color-background-deep: var(--background-deep);
   --color-foreground: var(--foreground);
@@ -212,7 +225,6 @@
   --color-surface-glass: var(--surface-glass);
   --color-code: var(--code-bg);
 
-  --font-sans: "Pixelify Sans Variable", "Inter Variable", "Vazirmatn Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
 
   --radius-sm: 10px;
@@ -242,13 +254,14 @@
     background: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+    font-weight: 560;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     overscroll-behavior: none;
   }
   :lang(fa) {
-    font-family: "Pixelify Sans Variable", "Vazirmatn Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+    font-family: "Geist Pixel Digits", "Pixelify Sans Variable", "Vazirmatn Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
   }
   ::selection {
     background: color-mix(in oklab, var(--primary) 32%, transparent);
@@ -851,4 +864,203 @@
   transform: translateY(-14px);
   filter: blur(8px) drop-shadow(0 0 14px transparent);
   transition-delay: 0.25s;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Smooth bottom-to-top sheet & panel rise animations                 */
+/* ------------------------------------------------------------------ */
+@keyframes dialog-overlay-rise-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes dialog-overlay-rise-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.dialog-overlay-rise[data-state="open"] {
+  animation: dialog-overlay-rise-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.dialog-overlay-rise[data-state="closed"] {
+  animation: dialog-overlay-rise-out 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes dialog-rise-desktop-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 120px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes dialog-rise-desktop-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 96px, 0) scale(0.985);
+  }
+}
+@keyframes dialog-rise-mobile-in {
+  from {
+    opacity: 0.35;
+    transform: translate3d(0, 100%, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+@keyframes dialog-rise-mobile-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0.25;
+    transform: translate3d(0, 100%, 0);
+  }
+}
+
+.dialog-rise[data-state="open"] {
+  animation: dialog-rise-desktop-in 580ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+.dialog-rise[data-state="closed"] {
+  animation: dialog-rise-desktop-out 340ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  will-change: transform, opacity;
+}
+@media (max-width: 639px) {
+  .dialog-rise[data-state="open"] {
+    animation: dialog-rise-mobile-in 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .dialog-rise[data-state="closed"] {
+    animation: dialog-rise-mobile-out 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+}
+
+@keyframes page-rise-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 84px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+.page-rise {
+  animation: page-rise-in 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+@keyframes right-menu-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.right-menu-enter {
+  animation: right-menu-enter 260ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* Native 1:1 hardware-accelerated horizontal page slider for mobile preview */
+.oh-mobile-pager {
+  scroll-snap-type: x mandatory;
+  scroll-behavior: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.oh-mobile-pager::-webkit-scrollbar {
+  display: none;
+}
+.oh-mobile-pager-slide {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+/* Prevent active preview iframes and accidental text selection from fighting a mobile page swipe */
+[data-pager-dragging="true"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+[data-pager-dragging="true"] iframe {
+  pointer-events: none !important;
+}
+
+/* Remove harsh browser-default white number spin arrows site-wide */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Custom accent-synced slider used in Preview Studio Inspector */
+.oh-studio-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+  outline: none;
+  cursor: pointer;
+}
+.oh-studio-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in oklab, var(--surface-1) 92%, white);
+  background: var(--primary);
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--primary) 45%, rgba(0, 0, 0, 0.35));
+  cursor: grab;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+.oh-studio-range::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.oh-studio-range::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.22);
+}
+.oh-studio-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in oklab, var(--surface-1) 92%, white);
+  background: var(--primary);
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--primary) 45%, rgba(0, 0, 0, 0.35));
+  cursor: grab;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-overlay-rise[data-state="open"],
+  .dialog-overlay-rise[data-state="closed"],
+  .dialog-rise[data-state="open"],
+  .dialog-rise[data-state="closed"],
+  .page-rise {
+    animation-duration: 0.01ms !important;
+  }
 }

@@ -50,6 +50,14 @@ const ENDPOINT_SUFFIXES = [
   "/images/generations",
 ];
 
+const KNOWN_HOST_API_PREFIX: Record<string, string> = {
+  "coarena.ai": "/api/v1",
+  "www.coarena.ai": "/api/v1",
+  "openrouter.ai": "/api/v1",
+  "www.openrouter.ai": "/api/v1",
+  "api.groq.com": "/openai/v1",
+};
+
 /**
  * Canonical provider base URL, mirroring `src/lib/normalize.ts` so a provider
  * saved by the admin panel and one saved in the browser resolve the same
@@ -58,8 +66,9 @@ const ENDPOINT_SUFFIXES = [
  * (a 404 the chat surfaced as "model unavailable").
  *
  * Rules: drop query/hash, collapse duplicate slashes, strip a pasted endpoint
- * (`/v1/chat/completions`, `/models`, …), collapse `/v1/v1`, and add the
- * default version segment when the URL has no path.
+ * (`/v1/chat/completions`, `/models`, …), collapse `/v1/v1`, apply canonical
+ * prefixes for hosts whose API lives under `/api/v1` or `/openai/v1`, and add
+ * the default version segment when the URL has no path.
  */
 export function normalizeProviderBaseUrl(raw: string, format: ProviderFormat = "openai"): string {
   let url: URL;
@@ -69,8 +78,8 @@ export function normalizeProviderBaseUrl(raw: string, format: ProviderFormat = "
     return raw.trim().replace(/\/+$/, "");
   }
 
-  let path = url.pathname.replace(/\/{2,}/g, "/");
-  const lower = path.toLowerCase().replace(/\/$/, "");
+  let path = url.pathname.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+  const lower = path.toLowerCase();
   for (const suffix of ENDPOINT_SUFFIXES) {
     if (lower.endsWith(suffix)) {
       path = path.slice(0, path.length - suffix.length);
@@ -79,6 +88,14 @@ export function normalizeProviderBaseUrl(raw: string, format: ProviderFormat = "
   }
   path = path.replace(/\/models\/[^/]+:(?:stream)?generatecontent$/i, "");
   path = path.replace(/\/(v1beta|v1|v2|v3)\/\1\b/gi, "/$1");
+
+  const hostPrefix = KNOWN_HOST_API_PREFIX[url.hostname.toLowerCase()];
+  if (hostPrefix && format !== "custom") {
+    const cleanLower = path.toLowerCase();
+    if (!cleanLower || cleanLower === "/" || cleanLower === "/v1" || cleanLower === "/api" || cleanLower === "/openai") {
+      path = hostPrefix;
+    }
+  }
 
   if (!path || path === "/") {
     path = format === "gemini" ? "/v1beta" : format === "custom" ? "" : "/v1";
@@ -132,10 +149,21 @@ export async function safeFetch(
   let current = target;
   let currentInit: RequestInit = { ...init };
   let headers = new Headers(init.headers);
+  const callerSignal = init.signal;
 
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    if (callerSignal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    const onCallerAbort = () => controller.abort();
+    callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+
     let response: Response;
     try {
       response = await fetch(current.toString(), {
@@ -144,8 +172,16 @@ export async function safeFetch(
         redirect: "manual",
         signal: controller.signal,
       });
+    } catch (err) {
+      if (timedOut) {
+        const timeoutErr = new Error(`Upstream request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+        timeoutErr.name = "TimeoutError";
+        throw timeoutErr;
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
     }
 
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;

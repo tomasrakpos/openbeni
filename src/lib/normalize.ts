@@ -44,6 +44,17 @@ function isLocalHost(host: string): boolean {
   return false;
 }
 
+const KNOWN_HOST_API_PREFIX: Record<string, string> = {
+  "openrouter.ai": "/api/v1",
+  "api.groq.com": "/openai/v1",
+  "coarena.ai": "/api/v1",
+  "api.coarena.ai": "/api/v1",
+  "api.cohere.com": "/compatibility/v1",
+  "api.cohere.ai": "/compatibility/v1",
+  "models.inference.ai.azure.com": "",
+  "models.github.ai": "/inference",
+};
+
 export function versionSegment(format: ApiFormat): string {
   if (format === "gemini") return "/v1beta";
   return "/v1";
@@ -93,10 +104,11 @@ export function normalizeBaseUrl(raw: string, format: ApiFormat = "openai"): Nor
   if (path !== url.pathname) changes.push({ code: "collapsed-slashes" });
 
   // strip a pasted endpoint like /v1/chat/completions or /models
-  let lower = path.toLowerCase().replace(/\/$/, "");
+  const trimmedPath = path.length > 1 ? path.replace(/\/+$/, "") : path;
+  const lower = trimmedPath.toLowerCase();
   for (const suffix of ENDPOINT_SUFFIXES) {
     if (lower.endsWith(suffix)) {
-      path = path.slice(0, path.length - suffix.length);
+      path = trimmedPath.slice(0, trimmedPath.length - suffix.length);
       changes.push({ code: "removed-endpoint", detail: suffix });
       break;
     }
@@ -110,8 +122,14 @@ export function normalizeBaseUrl(raw: string, format: ApiFormat = "openai"): Nor
   path = path.replace(/\/(v1|v1beta|v2|v3|openai)\/\1\b/gi, "/$1");
 
   if (!path || path === "/") {
-    path = versionSegment(format);
-    changes.push({ code: "added-version", detail: path.replace("/", "") });
+    const knownPrefix = KNOWN_HOST_API_PREFIX[url.hostname.toLowerCase()];
+    if (knownPrefix !== undefined) {
+      path = knownPrefix;
+      if (knownPrefix) changes.push({ code: "added-version", detail: knownPrefix.replace(/^\//, "") });
+    } else {
+      path = versionSegment(format);
+      changes.push({ code: "added-version", detail: path.replace("/", "") });
+    }
   }
 
   if (path.length > 1 && path.endsWith("/")) {

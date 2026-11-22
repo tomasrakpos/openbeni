@@ -9,6 +9,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Route,
   Star,
   Trash2,
   Zap,
@@ -30,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { MenuFrame, menuFrameClass } from "@/components/ui/menu-frame";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatLabel } from "@/lib/detect";
@@ -40,6 +42,8 @@ import { effectiveTier } from "@/lib/registry";
 import { formatRelativeTime } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { prettyModelName, useProvidersStore } from "@/stores/providers";
+import { eligibleFreeModelsForLocalProvider, useRoutersStore } from "@/stores/routers";
+import { useCatalogStore } from "@/stores/catalog";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import type { AIModel, PingResult, Provider } from "@/lib/types";
@@ -100,6 +104,45 @@ export function ProviderCard({
   const [expanded, setExpanded] = React.useState(false);
   const [newModel, setNewModel] = React.useState("");
   const [adding, setAdding] = React.useState(false);
+  const [routerComposerOpen, setRouterComposerOpen] = React.useState(false);
+  const [routerName, setRouterName] = React.useState("");
+  const [creatingRouter, setCreatingRouter] = React.useState(false);
+
+  const localRouters = useRoutersStore((s) => s.localRouters);
+  const createLocalRouter = useRoutersStore((s) => s.createLocalRouter);
+  const deleteLocalRouter = useRoutersStore((s) => s.deleteLocalRouter);
+  const catalogModels = useCatalogStore((s) => s.models);
+
+  const freeEligibleModels = React.useMemo(
+    () => eligibleFreeModelsForLocalProvider(provider, models),
+    [provider, models],
+  );
+  const providerRouters = React.useMemo(
+    () => localRouters.filter((r) => r.providerId === provider.id),
+    [localRouters, provider.id],
+  );
+
+  const handleCreateRouter = async () => {
+    if (creatingRouter) return;
+    setCreatingRouter(true);
+    try {
+      const res = await createLocalRouter({
+        provider,
+        name: routerName,
+        allModels: models,
+        extraModelNames: catalogModels.flatMap((m) => [m.id, m.displayName]),
+      });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      setRouterName("");
+      setRouterComposerOpen(false);
+      toast.success(t("router.created"));
+    } finally {
+      setCreatingRouter(false);
+    }
+  };
 
   const add = async () => {
     const id = newModel.trim();
@@ -118,10 +161,12 @@ export function ProviderCard({
 
   return (
     <article
+      style={{ "--hl": 1 } as React.CSSProperties}
       className={cn(
-        "surface-card group overflow-hidden transition-[border-color,box-shadow] duration-200",
+        menuFrameClass,
+        "group overflow-hidden transition-[border-color,box-shadow] duration-200",
         provider.enabled
-          ? "hover:border-[color-mix(in_oklab,var(--primary)_22%,var(--border))] hover:shadow-md"
+          ? "hover:border-[color-mix(in_oklab,var(--primary)_26%,var(--border-strong))]"
           : "opacity-70",
       )}
     >
@@ -132,7 +177,7 @@ export function ProviderCard({
           className="rounded-[12px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]"
           aria-label={`${t("providers.edit")}: ${provider.name}`}
         >
-          <ProviderIcon icon={provider.icon} name={provider.name} color={provider.color} baseUrl={provider.baseUrl} size={42} />
+          <ProviderIcon icon={provider.icon} name={provider.name} color={provider.color} baseUrl={provider.baseUrl} size={42} water />
         </button>
 
         <div className="min-w-0 flex-1">
@@ -141,7 +186,6 @@ export function ProviderCard({
             {provider.favorite ? <Star className="size-3.5 fill-[var(--warning)] text-[var(--warning)]" /> : null}
             <Badge variant="accent">{formatLabel(provider.apiFormat)}</Badge>
             {!provider.enabled ? <Badge variant="unknown">{t("common.disable")}</Badge> : null}
-            {provider.useProxy ? <Badge variant="primary">proxy</Badge> : null}
           </div>
           <p className="mt-0.5 truncate font-mono text-[10.5px] text-[var(--faint)]">{provider.baseUrl}</p>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -247,12 +291,6 @@ export function ProviderCard({
         </div>
       </div>
 
-      {provider.notes ? (
-        <p className="border-t border-[var(--border)] bg-[var(--surface-2)]/30 px-4 py-2 text-[10.5px] leading-relaxed text-[var(--muted-foreground)]">
-          {provider.notes}
-        </p>
-      ) : null}
-
       {expanded && (
         <div className="border-t border-[var(--border)]">
           <div className="flex items-center justify-between px-3 py-2">
@@ -347,6 +385,95 @@ export function ProviderCard({
               {t("providers.addModel")}
             </Button>
           </div>
+
+          <div className="border-t border-[var(--border)] bg-[var(--surface-2)]/30 px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+                <Route className="size-3.5 text-[var(--primary)]" />
+                <span>{t("router.createFromFree")}</span>
+                <Badge variant="unknown" className="text-[10px]">
+                  {t("router.activeCount", { n: freeEligibleModels.length })}
+                </Badge>
+              </div>
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={freeEligibleModels.length === 0}
+                title={freeEligibleModels.length === 0 ? t("router.noFreeModels") : undefined}
+                onClick={() => setRouterComposerOpen((open) => !open)}
+              >
+                <Route className="size-3" />
+                {t("router.create")}
+              </Button>
+            </div>
+
+            {freeEligibleModels.length === 0 && (
+              <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]">
+                {t("router.noFreeModels")}
+              </p>
+            )}
+
+            {routerComposerOpen && freeEligibleModels.length > 0 && (
+              <div className="mt-2 flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    value={routerName}
+                    onChange={(event) => setRouterName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void handleCreateRouter();
+                    }}
+                    placeholder={t("router.namePlaceholder")}
+                    maxLength={32}
+                    className="h-7 flex-1 text-[11.5px]"
+                    aria-label={t("router.nameLabel")}
+                  />
+                  <Button
+                    size="xs"
+                    onClick={() => void handleCreateRouter()}
+                    disabled={creatingRouter || routerName.trim().length < 2}
+                  >
+                    {creatingRouter ? <Loader2 className="size-3 animate-spin" /> : t("router.create")}
+                  </Button>
+                </div>
+                <span className="text-[10.5px] text-[var(--faint)]">{t("router.nameHint")}</span>
+              </div>
+            )}
+
+            {providerRouters.length > 0 && (
+              <ul className="mt-2 flex flex-col gap-1">
+                {providerRouters.map((router) => (
+                  <li
+                    key={router.id}
+                    className="flex items-center justify-between gap-2 rounded-[8px] border border-[var(--border)] bg-[var(--surface-1)] px-2.5 py-1.5 text-[11.5px]"
+                  >
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <Route className="size-3.5 shrink-0 text-[var(--primary)]" />
+                      <span className="truncate font-medium text-foreground">{router.name}</span>
+                      <Badge variant="primary" className="text-[9.5px]">
+                        {t("router.badge")}
+                      </Badge>
+                      <span className="text-[10.5px] text-[var(--muted-foreground)]">
+                        {freeEligibleModels.length > 0
+                          ? t("router.activeCount", { n: freeEligibleModels.length })
+                          : t("router.disabledEmpty")}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void deleteLocalRouter(router.id);
+                        toast.success(t("router.deleted"));
+                      }}
+                      aria-label={t("common.delete")}
+                      className="grid size-6 place-items-center rounded-[6px] text-[var(--faint)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--destructive)]"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       )}
 
@@ -369,12 +496,12 @@ export function ProviderCard({
 
 export function ProviderModelRowSkeleton() {
   return (
-    <div className="surface-card flex animate-pulse items-center gap-3 p-4">
+    <MenuFrame style={{ "--hl": 1 } as React.CSSProperties} className="flex animate-pulse items-center gap-3 p-4">
       <span className="size-[42px] rounded-[12px] bg-[var(--surface-2)]" />
       <div className="flex-1 space-y-2">
         <span className="block h-3 w-32 rounded bg-[var(--surface-2)]" />
         <span className="block h-2.5 w-52 rounded bg-[var(--surface-2)]" />
       </div>
-    </div>
+    </MenuFrame>
   );
 }

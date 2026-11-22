@@ -1,18 +1,22 @@
 // chat feature: modelOptions; change its UI/flow here and keep related state/API calls in sync.
 import type { PromptComposerModel } from "@/components/ui/prompt-composer";
-import { providerDisplayName } from "@/lib/bundled";
+import { isBundledProvider, providerDisplayName } from "@/lib/bundled";
 import { isSameModel, modelIdentityKeys } from "@/lib/modelRoutes";
+import { effectiveTier, tierSortRank } from "@/lib/registry";
+import type { CombinedRouterItem } from "@/stores/routers";
 import type { AIModel, Provider } from "@/lib/types";
 
 /**
- * Enabled models from enabled providers, ordered like the model picker:
- * favourite providers first, then provider order, then favourite models.
- *
- * A logical model can be served by several bundled gateways. Show it once and
- * label the row with the site name; the send path queues the other gateways as
- * automatic fallbacks if this one hits a limit.
+ * Enabled models from enabled providers, ordered with Free Model Routers and
+ * FREE models FIRST at the top of the chat menu, followed by unclassified models
+ * and PAID models below.
  */
-export function buildComposerModels(providers: Provider[], models: AIModel[]): PromptComposerModel[] {
+export function buildComposerModels(
+  providers: Provider[],
+  models: AIModel[],
+  routers: readonly CombinedRouterItem[] = [],
+  lang: "en" | "fa" = "en",
+): PromptComposerModel[] {
   const providerMap = new Map(
     providers
       .filter((provider) => provider.enabled)
@@ -21,46 +25,100 @@ export function buildComposerModels(providers: Provider[], models: AIModel[]): P
   const orderedProviders = [...providerMap.values()].sort(
     (a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order,
   );
+  const providerRank = new Map(orderedProviders.map((provider, idx) => [provider.id, idx]));
+
+  const routerOptions: PromptComposerModel[] = routers
+    .filter((r) => r.enabled)
+    .map((r) => {
+      const empty = r.activeMemberCount === 0;
+      const countText = empty
+        ? lang === "fa"
+          ? "بدون مدل فعال"
+          : "No active models"
+        : lang === "fa"
+          ? `${r.activeMemberCount} مدل فعال`
+          : `${r.activeMemberCount} active`;
+      return {
+        id: r.selectionId,
+        label: r.name,
+        note: countText,
+        tier: "free",
+        userAdded: r.ownerScope === "user",
+        isRouter: true,
+        routerActiveCount: r.activeMemberCount,
+        disabled: empty,
+      };
+    });
 
   const seen = new Set<string>();
-  const out: PromptComposerModel[] = [];
+  const collected: {
+    option: PromptComposerModel;
+    tierRank: number;
+    providerIdx: number;
+    favorite: boolean;
+    order: number;
+  }[] = [];
+
   for (const provider of orderedProviders) {
+    const userAdded = !isBundledProvider(provider) && !provider.managed;
     const providerModels = models
       // Locked site models stay visible in the model picker with a Paid badge,
       // but they must never be selectable here.
       .filter((model) => model.enabled && !model.locked && model.providerId === provider.id)
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order);
+
     for (const model of providerModels) {
       const identity = modelIdentityKeys(model)[0] ?? model.id;
       if (seen.has(identity)) continue;
       seen.add(identity);
-      out.push({
-        id: model.id,
-        label: model.displayName,
-        note: providerDisplayName(provider),
+      const tier = effectiveTier(model, provider);
+      collected.push({
+        option: {
+          id: model.id,
+          label: model.displayName,
+          note: providerDisplayName(provider),
+          tier,
+          userAdded,
+        },
+        // Free models always appear FIRST at the top of the menu; paid models below.
+        tierRank: tierSortRank(tier),
+        providerIdx: providerRank.get(provider.id) ?? 999,
+        favorite: Boolean(model.favorite),
+        order: model.order,
       });
     }
   }
-  return out;
+
+  collected.sort(
+    (a, b) =>
+      a.tierRank - b.tierRank ||
+      a.providerIdx - b.providerIdx ||
+      Number(b.favorite) - Number(a.favorite) ||
+      a.order - b.order,
+  );
+
+  return [...routerOptions, ...collected.map((entry) => entry.option)];
 }
 
 /**
  * The chat may still point at a gateway row that was folded into a visible
- * duplicate. Map it by model identity so the pill shows the same model.
+ * duplicate, or at an active Free Model Router (`router::...`).
  */
 export function resolveComposerModelId(
   options: PromptComposerModel[],
   models: AIModel[],
   id: string,
 ): string {
-  if (id && options.some((option) => option.id === id)) return id;
+  const direct = id ? options.find((option) => option.id === id) : undefined;
+  if (direct && !direct.disabled) return direct.id;
   const selected = id ? models.find((model) => model.id === id) : undefined;
   if (selected) {
     const match = options.find((option) => {
+      if (option.disabled) return false;
       const candidate = models.find((model) => model.id === option.id);
       return candidate ? isSameModel(selected, candidate) : false;
     });
     if (match) return match.id;
   }
-  return options[0]?.id ?? "";
+  return options.find((option) => !option.disabled)?.id ?? options[0]?.id ?? "";
 }

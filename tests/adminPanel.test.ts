@@ -256,3 +256,146 @@ describe("provider creation", () => {
     ).toBe(true);
   });
 });
+
+describe("admin users analytics, blocking & model visibility sync", () => {
+  it("returns online status, offlineDays, message counts, and admin vs default models per user", async () => {
+    const nowIso = new Date().toISOString();
+    const fourDaysAgo = new Date(Date.now() - 4 * 86_400_000 - 3_600_000).toISOString();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (value: unknown) =>
+          new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+        if (url.includes("/rest/v1/profiles")) {
+          return json([
+            { id: "u-online", email: "ali@example.com", display_name: "Ali", role: "user", status: "active", created_at: fourDaysAgo, last_seen_at: nowIso },
+            { id: "u-away", email: "sara@example.com", display_name: "Sara", role: "user", status: "active", created_at: fourDaysAgo, last_seen_at: fourDaysAgo },
+          ]);
+        }
+        if (url.includes("/rest/v1/user_usage_summary")) {
+          return json([
+            { user_id: "u-online", prompt_tokens: 1200, completion_tokens: 800, requests: 3 },
+            { user_id: "u-away", prompt_tokens: 300, completion_tokens: 200, requests: 1 },
+          ]);
+        }
+        if (url.includes("/rest/v1/providers")) {
+          return json([{ id: "prov-admin-1", name: "OpenRouter" }]);
+        }
+        if (url.includes("/rest/v1/usage_events")) {
+          return json([
+            { user_id: "u-online", provider_id: "prov-admin-1", model_name: "Claude 3.7 Sonnet", provider_name: "OpenRouter", prompt_tokens: 500, completion_tokens: 400, created_at: nowIso },
+            { user_id: "u-online", provider_id: "prov-admin-1", model_name: "Claude 3.7 Sonnet", provider_name: "OpenRouter", prompt_tokens: 400, completion_tokens: 200, created_at: nowIso },
+            { user_id: "u-online", provider_id: null, model_name: "OpenHarneks Default", provider_name: "OpenHarneks", prompt_tokens: 300, completion_tokens: 200, created_at: nowIso },
+            { user_id: "u-away", provider_id: null, model_name: "OpenHarneks Default", provider_name: "OpenHarneks", prompt_tokens: 300, completion_tokens: 200, created_at: fourDaysAgo },
+          ]);
+        }
+        return json([]);
+      }),
+    );
+
+    const { token } = await createAdminToken(ENV);
+    const res = await handleAdmin(
+      new Request("https://app.example.com/api/admin/users", { headers: { "x-admin-key": token } }),
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as {
+      data: {
+        users: Array<{
+          id: string;
+          online: boolean;
+          offlineDays: number;
+          messagesSent: number;
+          modelsUsed: Array<{ model: string; source: string; messages: number }>;
+        }>;
+      };
+    };
+
+    const ali = payload.data.users.find((u) => u.id === "u-online")!;
+    expect(ali.online).toBe(true);
+    expect(ali.offlineDays).toBe(0);
+    expect(ali.messagesSent).toBe(3);
+    expect(ali.modelsUsed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "Claude 3.7 Sonnet", source: "admin", messages: 2 }),
+        expect.objectContaining({ model: "OpenHarneks Default", source: "default", messages: 1 }),
+      ]),
+    );
+
+    const sara = payload.data.users.find((u) => u.id === "u-away")!;
+    expect(sara.online).toBe(false);
+    expect(sara.offlineDays).toBeGreaterThanOrEqual(4);
+    expect(sara.messagesSent).toBe(1);
+  });
+
+  it("updates both site_paid and tier when toggling a model between Free, Paid, and Hidden", async () => {
+    const patches: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.includes("/rest/v1/catalog_models") && method === "PATCH") {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          patches.push(body);
+          return new Response(
+            JSON.stringify([
+              {
+                id: "m-1",
+                provider_id: "p-1",
+                upstream_id: "gpt-4o",
+                display_name: "GPT-4o",
+                enabled: body.enabled ?? true,
+                site_paid: body.site_paid ?? false,
+                tier: body.tier ?? "free",
+                upstream_verified: true,
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }),
+    );
+
+    const { token } = await createAdminToken(ENV);
+    // Mark as Free & visible
+    const freeRes = await handleAdmin(
+      new Request("https://app.example.com/api/admin/models/m-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-admin-key": token },
+        body: JSON.stringify({ enabled: true, paid: false }),
+      }),
+      ENV,
+    );
+    expect(freeRes.status).toBe(200);
+    expect(patches[0]).toMatchObject({ enabled: true, site_paid: false, tier: "free" });
+
+    // Mark as Paid
+    const paidRes = await handleAdmin(
+      new Request("https://app.example.com/api/admin/models/m-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-admin-key": token },
+        body: JSON.stringify({ enabled: true, paid: true }),
+      }),
+      ENV,
+    );
+    expect(paidRes.status).toBe(200);
+    expect(patches[1]).toMatchObject({ enabled: true, site_paid: true, tier: "paid" });
+
+    // Mark as Hidden
+    const hideRes = await handleAdmin(
+      new Request("https://app.example.com/api/admin/models/m-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-admin-key": token },
+        body: JSON.stringify({ enabled: false }),
+      }),
+      ENV,
+    );
+    expect(hideRes.status).toBe(200);
+    expect(patches[2]).toMatchObject({ enabled: false });
+  });
+});
+

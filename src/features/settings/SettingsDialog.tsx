@@ -1,44 +1,80 @@
 // settings feature: SettingsDialog; change its UI/flow here and keep related state/API calls in sync.
 import {
+  Activity,
   CheckCircle2,
-  Database,
   Download,
-  Info,
   KeyRound,
   Loader2,
   Lock,
+  MessageSquare,
   Network,
-  Palette,
   Plus,
+  Server,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { GlowButton } from "@/components/ui/glow-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { db } from "@/db";
-import { CoarenaPoolStatus } from "@/features/settings/CoarenaPoolStatus";
+import { clearAllData, db } from "@/db";
 import { downloadJson, settingsExportPayload, type SettingsExport } from "@/lib/export";
 import { useT } from "@/lib/i18n";
 import { uid } from "@/lib/id";
-import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth";
+import { useChatsStore } from "@/stores/chats";
 import { useProvidersStore } from "@/stores/providers";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import type { Settings } from "@/lib/types";
+
+/** Exact same frame material as ProviderWizard for visual consistency. */
+const FRAME: React.CSSProperties = {
+  border: "1px solid var(--border-strong)",
+  background:
+    "linear-gradient(180deg,color-mix(in oklab,var(--foreground) 6%,transparent),color-mix(in oklab,var(--foreground) 1.5%,transparent)),var(--surface-1)",
+  boxShadow:
+    "inset 0 1px 0 var(--glass-inner-top,rgba(255,255,255,.14)),0 24px 48px color-mix(in oklab,hsl(var(--shadow-color,0 0% 0%)) 55%,transparent)",
+};
+
+const CSS = `
+.stg-head{display:flex;align-items:center;gap:14px;flex:none;padding:20px 22px 16px}
+.stg-badge{display:grid;place-items:center;width:48px;height:48px;flex:none;border-radius:15px;color:var(--primary);background:color-mix(in oklab,var(--primary) 14%,var(--surface-1));box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--primary) 26%,transparent)}
+.stg-ttl{flex:1;min-width:0}
+.stg-title{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em;color:var(--foreground)}
+.stg-sub{margin:2px 0 0;font-size:12.5px;color:var(--muted-foreground)}
+.stg-x{display:grid;place-items:center;width:38px;height:38px;flex:none;border-radius:12px;border:1px solid var(--border-strong);background:color-mix(in oklab,var(--foreground) 5%,transparent);color:var(--foreground);cursor:pointer;transition:background .15s}
+.stg-x:hover{background:color-mix(in oklab,var(--foreground) 10%,transparent)}
+.stg-tabs{flex:none;padding:0 22px 14px;border-bottom:1px solid var(--border)}
+.stg-main{flex:1 1 auto;min-height:0;overflow-y:auto;padding:18px 22px;scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+.stg-card{border-radius:18px;border:1px solid var(--border);background:color-mix(in oklab,var(--foreground) 3%,transparent);padding:14px 16px}
+.stg-stat{border-radius:14px;border:1px solid var(--border);background:color-mix(in oklab,var(--foreground) 3.5%,transparent);padding:10px 8px;text-align:center}
+.stg-foot{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex:none;padding:14px 22px 22px;border-top:1px solid var(--border)}
+@media(max-width:560px){
+  .stg-head{gap:10px;padding:14px 16px 12px}
+  .stg-badge{width:38px;height:38px;border-radius:12px}
+  .stg-title{font-size:16.5px}
+  .stg-sub{font-size:11.5px}
+  .stg-x{width:32px;height:32px;border-radius:10px}
+  .stg-tabs{padding:0 16px 12px}
+  .stg-main{padding:14px 16px}
+  .stg-card{border-radius:15px;padding:12px 13px}
+  .stg-foot{padding:12px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+}
+`;
 
 function Section({
   title,
@@ -50,11 +86,11 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-3.5">
+    <section className="stg-card">
       <header className="mb-3">
-        <h3 className="text-[12.5px] font-semibold text-foreground">{title}</h3>
+        <h3 className="text-[13px] font-semibold text-foreground">{title}</h3>
         {description ? (
-          <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--muted-foreground)]">{description}</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">{description}</p>
         ) : null}
       </header>
       <div className="space-y-3">{children}</div>
@@ -73,9 +109,9 @@ function Field({
 }) {
   return (
     <div className="grid gap-1.5">
-      <Label className="text-[11.5px]">{label}</Label>
+      <Label className="text-[12px]">{label}</Label>
       {children}
-      {hint ? <p className="text-[10px] leading-relaxed text-[var(--faint)]">{hint}</p> : null}
+      {hint ? <p className="text-[10.5px] leading-relaxed text-[var(--faint)]">{hint}</p> : null}
     </div>
   );
 }
@@ -94,8 +130,10 @@ function ToggleRow({
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
-        <p className="text-[11.5px] font-medium text-foreground">{label}</p>
-        {description ? <p className="mt-0.5 text-[10px] leading-relaxed text-[var(--muted-foreground)]">{description}</p> : null}
+        <p className="text-[12.5px] font-medium text-foreground">{label}</p>
+        {description ? (
+          <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">{description}</p>
+        ) : null}
       </div>
       <Switch checked={checked} onCheckedChange={onChange} aria-label={label} />
     </div>
@@ -106,10 +144,14 @@ export function SettingsDialog() {
   const t = useT();
   const open = useUiStore((s) => s.settingsOpen);
   const setOpen = useUiStore((s) => s.setSettingsOpen);
+  const setView = useUiStore((s) => s.setView);
+  const setAuthOpen = useUiStore((s) => s.setAuthOpen);
+  const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
+
+  const signedIn = useAuthStore((s) => s.signedIn);
 
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
-  const toggleTheme = useSettingsStore((s) => s.toggleTheme);
   const vaultMode = useSettingsStore((s) => s.vaultMode);
   const enableEncryption = useSettingsStore((s) => s.enableEncryption);
   const disableEncryption = useSettingsStore((s) => s.disableEncryption);
@@ -119,6 +161,10 @@ export function SettingsDialog() {
   const models = useProvidersStore((s) => s.models);
   const createProvider = useProvidersStore((s) => s.createProvider);
   const addModels = useProvidersStore((s) => s.addModels);
+  const pingAll = useProvidersStore((s) => s.pingAll);
+
+  const chats = useChatsStore((s) => s.chats);
+  const loadChats = useChatsStore((s) => s.load);
 
   const [draft, setDraft] = React.useState({
     proxyUrl: settings.proxyUrl,
@@ -128,6 +174,7 @@ export function SettingsDialog() {
     maxTokens: settings.maxTokens,
     showBackground: settings.showBackground,
     showReasoning: settings.showReasoning,
+    rightPanelOpen: settings.rightPanelOpen,
   });
   const [presets, setPresets] = React.useState(settings.systemPresets);
   const [presetName, setPresetName] = React.useState("");
@@ -136,9 +183,14 @@ export function SettingsDialog() {
   const [confirmPassphrase, setConfirmPassphrase] = React.useState("");
   const [passBusy, setPassBusy] = React.useState(false);
   const [passError, setPassError] = React.useState<string | null>(null);
+  const [pinging, setPinging] = React.useState(false);
+  const [exportingChats, setExportingChats] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
+  const [clearChatsOpen, setClearChatsOpen] = React.useState(false);
   const [resetOpen, setResetOpen] = React.useState(false);
   const importRef = React.useRef<HTMLInputElement>(null);
+
+  const isFa = settings.lang === "fa";
 
   React.useEffect(() => {
     if (!open) return;
@@ -150,6 +202,7 @@ export function SettingsDialog() {
       maxTokens: settings.maxTokens,
       showBackground: settings.showBackground,
       showReasoning: settings.showReasoning,
+      rightPanelOpen: settings.rightPanelOpen,
     });
     setPresets(settings.systemPresets);
     setPassphrase("");
@@ -162,6 +215,7 @@ export function SettingsDialog() {
   const save = async () => {
     await update({ ...draft, systemPresets: presets });
     toast.success(t("settings.saved"));
+    setOpen(false);
   };
 
   const addPreset = async () => {
@@ -179,14 +233,46 @@ export function SettingsDialog() {
     await update({ systemPresets: next });
   };
 
+  const runPingAll = async () => {
+    setPinging(true);
+    try {
+      await pingAll();
+      toast.success(isFa ? "بررسی اتصال پرووایدرها انجام شد" : "Provider health check completed");
+    } catch {
+      toast.error(t("toast.failed"));
+    } finally {
+      setPinging(false);
+    }
+  };
+
   const exportSettings = async () => {
     const payload = settingsExportPayload(
       { ...settings, ...draft, systemPresets: presets },
       providers,
       models,
     );
-    downloadJson(payload, `openharneks-settings-${new Date().toISOString().slice(0, 10)}.json`);
+    await downloadJson(payload, `openharneks-settings-${new Date().toISOString().slice(0, 10)}.json`);
     toast.success(t("settings.exported"));
+  };
+
+  const exportAllChats = async () => {
+    setExportingChats(true);
+    try {
+      const [allChats, allMessages] = await Promise.all([db.chats.toArray(), db.messages.toArray()]);
+      const payload = {
+        format: "apiset-pro-chats-backup",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        chats: allChats,
+        messages: allMessages,
+      };
+      await downloadJson(payload, `openharneks-chats-${new Date().toISOString().slice(0, 10)}.json`);
+      toast.success(t("toast.exported"));
+    } catch {
+      toast.error(t("toast.failed"));
+    } finally {
+      setExportingChats(false);
+    }
   };
 
   const importSettings = async (file: File) => {
@@ -270,100 +356,61 @@ export function SettingsDialog() {
     }
   };
 
+  const visibleProvidersCount = providers.filter((p) => !p.bundled).length;
+
   return (
     <>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent frame className="flex max-h-[92dvh] flex-col gap-0 overflow-hidden p-0 sm:max-h-[86vh]">
-          <DialogHeader className="shrink-0 border-b border-[var(--border)] px-4 py-3.5 pr-12 sm:px-5">
-            <DialogTitle className="flex items-center gap-2">
-              <Settings2 className="size-4 text-[var(--primary)]" />
-              {t("settings.title")}
-            </DialogTitle>
-            <DialogDescription>{t("settings.aboutBody")}</DialogDescription>
-          </DialogHeader>
+        <DialogContent
+          hideClose
+          rise
+          dir="ltr"
+          style={FRAME}
+          className="flex max-h-[88dvh] flex-col gap-0 overflow-hidden rounded-t-[24px] p-0 sm:max-h-[84vh] sm:w-[min(620px,calc(100vw-2rem))] sm:max-w-none sm:rounded-[28px]"
+        >
+          <style>{CSS}</style>
 
-          <Tabs defaultValue="appearance" className="flex min-h-0 flex-1 flex-col">
-            <div className="shrink-0 overflow-x-auto border-b border-[var(--border)] px-3 py-2 sm:px-4">
-              <TabsList className="h-8 w-max">
-                <TabsTrigger value="appearance">
-                  <Palette /> {t("settings.appearance")}
+          <div className="stg-head">
+            <span className="stg-badge" aria-hidden="true">
+              <Settings2 size={20} />
+            </span>
+            <div className="stg-ttl">
+              <DialogTitle className="stg-title">{t("settings.title")}</DialogTitle>
+              <DialogDescription className="stg-sub">
+                {isFa ? "تنظیمات گفتگو، اتصال و حریم خصوصی" : "Chat defaults, connection, and privacy"}
+              </DialogDescription>
+            </div>
+            <button
+              type="button"
+              className="stg-x"
+              onClick={() => setOpen(false)}
+              aria-label={t("common.close")}
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <Tabs defaultValue="chat" className="flex min-h-0 flex-1 flex-col">
+            <div className="stg-tabs">
+              <TabsList className="w-full sm:w-auto">
+                <TabsTrigger value="chat" className="flex-1 sm:flex-none">
+                  <SlidersHorizontal />
+                  <span>{isFa ? "گفتگو" : "Chat"}</span>
                 </TabsTrigger>
-                <TabsTrigger value="chat">
-                  <SlidersHorizontal /> {t("settings.chatDefaults")}
+                <TabsTrigger value="network" className="flex-1 sm:flex-none">
+                  <Network />
+                  <span>{isFa ? "سرویس و شبکه" : "Network"}</span>
                 </TabsTrigger>
-                <TabsTrigger value="network">
-                  <Network /> {t("settings.network")}
-                </TabsTrigger>
-                <TabsTrigger value="security">
-                  <ShieldCheck /> {t("settings.security")}
-                </TabsTrigger>
-                <TabsTrigger value="data">
-                  <Database /> {t("settings.data")}
-                </TabsTrigger>
-                <TabsTrigger value="about">
-                  <Info /> {t("settings.about")}
+                <TabsTrigger value="privacy" className="flex-1 sm:flex-none">
+                  <ShieldCheck />
+                  <span>{isFa ? "امنیت و داده" : "Data"}</span>
                 </TabsTrigger>
               </TabsList>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
-              <TabsContent value="appearance" className="space-y-3">
-                <Section title={t("settings.theme")} description={t("settings.backgroundDesc")}>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(
-                      [
-                        { value: "dark", label: t("settings.dark") },
-                        { value: "light", label: t("settings.light") },
-                        { value: "system", label: t("settings.system") },
-                      ] as const
-                    ).map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => void update({ theme: option.value })}
-                        aria-pressed={settings.theme === option.value}
-                        className={cn(
-                          "flex h-16 flex-col items-center justify-center gap-1.5 rounded-[11px] border text-[11.5px] font-medium transition-colors",
-                          settings.theme === option.value
-                            ? "border-[var(--primary)] bg-[var(--primary-soft)] text-[var(--primary)]"
-                            : "border-[var(--border)] bg-[var(--surface-2)]/50 text-[var(--muted-foreground)] hover:border-[var(--border-strong)] hover:text-foreground",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "h-5 w-8 rounded-[5px] border",
-                            option.value === "dark"
-                              ? "border-white/15 bg-[#0a0c12]"
-                              : option.value === "light"
-                                ? "border-black/10 bg-white"
-                                : "border-[var(--border)] bg-[linear-gradient(110deg,#0a0c12_50%,#ffffff_50%)]",
-                          )}
-                        />
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label className="text-[11.5px]">{t("settings.language")}</Label>
-                    <Select value={settings.lang} onValueChange={(value) => void update({ lang: value as "en" | "fa" })}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="en">{t("settings.english")}</SelectItem>
-                        <SelectItem value="fa">{t("settings.persian")}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <ToggleRow
-                    label={t("settings.background")}
-                    description={t("settings.backgroundDesc")}
-                    checked={draft.showBackground}
-                    onChange={(value) => {
-                      setDraft((current) => ({ ...current, showBackground: value }));
-                      void update({ showBackground: value });
-                    }}
-                  />
+            <div className="stg-main">
+              <TabsContent value="chat" className="space-y-3">
+                <Section title={t("settings.chatDefaults")}>
                   <ToggleRow
                     label={t("settings.reasoning")}
                     description={t("settings.reasoningDesc")}
@@ -373,51 +420,68 @@ export function SettingsDialog() {
                       void update({ showReasoning: value });
                     }}
                   />
-                  <div className="flex items-center justify-between gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-2.5 py-2">
-                    <span className="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--muted-foreground)]">
-                      <Palette className="size-3" /> {t("palette.toggleTheme")}
-                    </span>
-                    <Button size="xs" variant="secondary" onClick={() => void toggleTheme()}>
-                      {t("palette.toggleTheme")}
-                    </Button>
-                  </div>
-                </Section>
-              </TabsContent>
+                  <ToggleRow
+                    label={t("palette.togglePanel")}
+                    description={
+                      isFa
+                        ? "نمایش پیش‌نمایش زنده و فایل‌ها کنار گفتگو"
+                        : "Show the live preview panel beside chats."
+                    }
+                    checked={draft.rightPanelOpen}
+                    onChange={(value) => {
+                      setDraft((current) => ({ ...current, rightPanelOpen: value }));
+                      void update({ rightPanelOpen: value });
+                    }}
+                  />
+                  <ToggleRow
+                    label={t("settings.background")}
+                    description={t("settings.backgroundDesc")}
+                    checked={draft.showBackground}
+                    onChange={(value) => {
+                      setDraft((current) => ({ ...current, showBackground: value }));
+                      void update({ showBackground: value });
+                    }}
+                  />
 
-              <TabsContent value="chat" className="space-y-3">
-                <Section title={t("settings.chatDefaults")} description={t("chat.params")}>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-[11.5px]">{t("settings.temperature")}</Label>
-                      <span className="font-mono text-[11px] text-[var(--muted-foreground)]">
-                        {draft.temperature.toFixed(2)}
-                      </span>
+                  <div className="h-px bg-[var(--border)]" />
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[12px]">{t("settings.temperature")}</Label>
+                        <span className="font-mono text-[11.5px] text-[var(--muted-foreground)]">
+                          {draft.temperature.toFixed(2)}
+                        </span>
+                      </div>
+                      <Slider
+                        value={[draft.temperature]}
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        onValueChange={([value]) =>
+                          setDraft((current) => ({ ...current, temperature: value ?? 0.7 }))
+                        }
+                        aria-label={t("settings.temperature")}
+                      />
                     </div>
-                    <Slider
-                      value={[draft.temperature]}
-                      min={0}
-                      max={2}
-                      step={0.05}
-                      onValueChange={([value]) =>
-                        setDraft((current) => ({ ...current, temperature: value ?? 0.7 }))
-                      }
-                      aria-label={t("settings.temperature")}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-[11.5px]">{t("settings.topP")}</Label>
-                      <span className="font-mono text-[11px] text-[var(--muted-foreground)]">{draft.topP.toFixed(2)}</span>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-[12px]">{t("settings.topP")}</Label>
+                        <span className="font-mono text-[11.5px] text-[var(--muted-foreground)]">
+                          {draft.topP.toFixed(2)}
+                        </span>
+                      </div>
+                      <Slider
+                        value={[draft.topP]}
+                        min={0.05}
+                        max={1}
+                        step={0.01}
+                        onValueChange={([value]) => setDraft((current) => ({ ...current, topP: value ?? 1 }))}
+                        aria-label={t("settings.topP")}
+                      />
                     </div>
-                    <Slider
-                      value={[draft.topP]}
-                      min={0.05}
-                      max={1}
-                      step={0.01}
-                      onValueChange={([value]) => setDraft((current) => ({ ...current, topP: value ?? 1 }))}
-                      aria-label={t("settings.topP")}
-                    />
                   </div>
+
                   <Field label={t("settings.maxTokens")}>
                     <Input
                       value={String(draft.maxTokens)}
@@ -426,46 +490,52 @@ export function SettingsDialog() {
                         setDraft((current) => ({ ...current, maxTokens: value || 1 }));
                       }}
                       inputMode="numeric"
-                      className="font-mono"
+                      className="h-10 rounded-[12px] font-mono"
                     />
                   </Field>
                 </Section>
 
-                <Section title={t("chat.systemPresets")} description={t("chat.systemPromptPlaceholder")}>
-                  <ul className="space-y-1">
-                    {presets.map((preset) => (
-                      <li
-                        key={preset.id}
-                        className="flex items-start gap-2 rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-2.5 py-1.5"
-                      >
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[11.5px] font-medium text-foreground">{preset.name}</span>
-                          <span className="mt-0.5 line-clamp-1 block text-[10px] text-[var(--faint)]">{preset.prompt}</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void removePreset(preset.id)}
-                          aria-label={`${t("common.delete")} ${preset.name}`}
-                          className="grid size-6 shrink-0 place-items-center rounded-[6px] text-[var(--faint)] hover:bg-[var(--destructive-soft)] hover:text-[var(--destructive)]"
+                <Section title={t("chat.systemPresets")}>
+                  {presets.length > 0 ? (
+                    <ul className="space-y-1.5">
+                      {presets.map((preset) => (
+                        <li
+                          key={preset.id}
+                          className="flex items-start gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-3 py-2"
                         >
-                          <Trash2 className="size-3" />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="grid gap-2 rounded-[10px] border border-dashed border-[var(--border-strong)] p-2.5">
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] font-medium text-foreground">
+                              {preset.name}
+                            </span>
+                            <span className="mt-0.5 line-clamp-1 block text-[10.5px] text-[var(--faint)]">
+                              {preset.prompt}
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void removePreset(preset.id)}
+                            aria-label={`${t("common.delete")} ${preset.name}`}
+                            className="grid size-6 shrink-0 place-items-center rounded-[7px] text-[var(--faint)] hover:bg-[var(--destructive-soft)] hover:text-[var(--destructive)]"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <div className="grid gap-2 rounded-[14px] border border-dashed border-[var(--border-strong)] p-3">
                     <Input
                       value={presetName}
                       onChange={(event) => setPresetName(event.target.value)}
                       placeholder={t("common.name")}
-                      className="h-8 text-[12px]"
+                      className="h-9 rounded-[11px] text-[12.5px]"
                     />
                     <Textarea
                       value={presetPrompt}
                       onChange={(event) => setPresetPrompt(event.target.value)}
                       placeholder={t("chat.systemPromptPlaceholder")}
                       rows={2}
-                      className="text-[12px]"
+                      className="rounded-[11px] text-[12.5px]"
                     />
                     <Button
                       size="xs"
@@ -480,54 +550,115 @@ export function SettingsDialog() {
               </TabsContent>
 
               <TabsContent value="network" className="space-y-3">
-                <Section title={t("settings.network")} description={t("settings.proxyDesc")}>
-                  <Field label={t("settings.proxy")} hint={t("providers.proxyNotice")}>
+                <Section
+                  title={isFa ? "وضعیت سرویس و دسترسی سریع" : "Workspace & health"}
+                  description={
+                    isFa
+                      ? "تست اتصال پرووایدرها و دسترسی سریع به مدل‌ها و کلیدهای API"
+                      : "Test provider connectivity and jump straight to models or API tokens."
+                  }
+                >
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="stg-stat">
+                      <div className="font-mono text-[15px] font-semibold text-foreground">{chats.length}</div>
+                      <div className="text-[10.5px] text-[var(--muted-foreground)]">{t("nav.chats")}</div>
+                    </div>
+                    <div className="stg-stat">
+                      <div className="font-mono text-[15px] font-semibold text-foreground">
+                        {visibleProvidersCount}
+                      </div>
+                      <div className="text-[10.5px] text-[var(--muted-foreground)]">{t("nav.providers")}</div>
+                    </div>
+                    <div className="stg-stat">
+                      <div className="font-mono text-[15px] font-semibold text-foreground">{models.length}</div>
+                      <div className="text-[10.5px] text-[var(--muted-foreground)]">
+                        {isFa ? "مدل‌ها" : "Models"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => void runPingAll()} disabled={pinging}>
+                      {pinging ? <Loader2 className="size-3.5 animate-spin" /> : <Activity className="size-3.5" />}
+                      {t("palette.pingAll")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        setOpen(false);
+                        setView("providers");
+                      }}
+                    >
+                      <Server className="size-3.5" /> {t("palette.providers")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        setOpen(false);
+                        if (signedIn) setAuthOpen(true);
+                        else setAuthGateOpen(true);
+                      }}
+                    >
+                      <KeyRound className="size-3.5" /> {t("auth.tokensTitle")}
+                    </Button>
+                  </div>
+                </Section>
+
+                <Section title={t("settings.network")}>
+                  <div className="grid gap-1.5">
+                    <Label className="text-[12px]">{t("settings.autoPing")}</Label>
+                    <Tabs
+                      value={String(draft.autoPingMinutes)}
+                      onValueChange={(value) => {
+                        const minutes = Number(value);
+                        setDraft((current) => ({ ...current, autoPingMinutes: minutes }));
+                        void update({ autoPingMinutes: minutes });
+                      }}
+                    >
+                      <TabsList className="w-full">
+                        <TabsTrigger value="0" className="flex-1">
+                          {isFa ? "خاموش" : "Off"}
+                        </TabsTrigger>
+                        <TabsTrigger value="5" className="flex-1">
+                          5m
+                        </TabsTrigger>
+                        <TabsTrigger value="15" className="flex-1">
+                          15m
+                        </TabsTrigger>
+                        <TabsTrigger value="30" className="flex-1">
+                          30m
+                        </TabsTrigger>
+                        <TabsTrigger value="60" className="flex-1">
+                          60m
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                  </div>
+
+                  <Field label={t("settings.proxy")}>
                     <Input
                       value={draft.proxyUrl}
                       onChange={(event) => setDraft((current) => ({ ...current, proxyUrl: event.target.value }))}
-                      placeholder="https://your-worker.workers.dev"
+                      placeholder="https://..."
                       spellCheck={false}
-                      className="font-mono text-[12px]"
+                      dir="ltr"
+                      className="h-10 rounded-[12px] font-mono text-[12.5px]"
                     />
                   </Field>
-                  <Field label={t("settings.autoPing")}>
-                    <Select
-                      value={String(draft.autoPingMinutes)}
-                      onValueChange={(value) =>
-                        setDraft((current) => ({ ...current, autoPingMinutes: Number(value) }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="0">{t("providers.autoPingOff")}</SelectItem>
-                        <SelectItem value="5">{t("providers.everyMinutes", { n: 5 })}</SelectItem>
-                        <SelectItem value="15">{t("providers.everyMinutes", { n: 15 })}</SelectItem>
-                        <SelectItem value="30">{t("providers.everyMinutes", { n: 30 })}</SelectItem>
-                        <SelectItem value="60">{t("providers.everyMinutes", { n: 60 })}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <p className="rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-2.5 py-2 text-[10px] leading-relaxed text-[var(--muted-foreground)]">
-                    {t("providers.proxyUrlMissing")}
-                  </p>
-                </Section>
-                <Section title={t("settings.coarenaSection")} description={t("settings.coarenaSectionDesc")}>
-                  <CoarenaPoolStatus />
                 </Section>
               </TabsContent>
 
-              <TabsContent value="security" className="space-y-3">
-                <Section title={t("settings.encryption")} description={t("settings.encryptionDesc")}>
-                  <div className="flex items-center justify-between gap-3 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-2.5 py-2">
-                    <span className="inline-flex items-center gap-2 text-[11.5px] text-foreground">
-                      <KeyRound className="size-3.5 text-[var(--primary)]" />
-                      {vaultMode === "passphrase" ? t("settings.encryptionPass") : t("settings.encryptionDevice")}
+              <TabsContent value="privacy" className="space-y-3">
+                <Section title={t("settings.encryption")}>
+                  <div className="flex items-center justify-between gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-3 py-2.5">
+                    <span className="inline-flex min-w-0 items-center gap-2 text-[12px] text-foreground">
+                      <KeyRound className="size-3.5 shrink-0 text-[var(--primary)]" />
+                      <span className="truncate">
+                        {vaultMode === "passphrase" ? t("settings.encryptionPass") : t("settings.encryptionDevice")}
+                      </span>
                     </span>
-                    <Badge variant={vaultMode === "passphrase" ? "free" : "default"}>
-                      {vaultMode === "passphrase" ? "AES-GCM + PBKDF2" : "AES-GCM"}
-                    </Badge>
                   </div>
 
                   {vaultMode === "device" ? (
@@ -538,7 +669,7 @@ export function SettingsDialog() {
                           value={passphrase}
                           onChange={(event) => setPassphrase(event.target.value)}
                           autoComplete="new-password"
-                          className="font-mono"
+                          className="h-10 rounded-[12px] font-mono"
                         />
                       </Field>
                       <Field label={t("settings.passphraseConfirm")}>
@@ -547,11 +678,11 @@ export function SettingsDialog() {
                           value={confirmPassphrase}
                           onChange={(event) => setConfirmPassphrase(event.target.value)}
                           autoComplete="new-password"
-                          className="font-mono"
+                          className="h-10 rounded-[12px] font-mono"
                         />
                       </Field>
                       {passError ? (
-                        <p role="alert" className="text-[11px] text-[var(--destructive)]">
+                        <p role="alert" className="text-[11.5px] text-[var(--destructive)]">
                           {passError}
                         </p>
                       ) : null}
@@ -562,10 +693,6 @@ export function SettingsDialog() {
                     </div>
                   ) : (
                     <div className="space-y-2.5">
-                      <p className="flex items-start gap-1.5 rounded-[9px] bg-[var(--success-soft)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--success)]">
-                        <CheckCircle2 className="mt-0.5 size-3 shrink-0" />
-                        {t("settings.encryptionDesc")}
-                      </p>
                       <div className="flex flex-wrap gap-2">
                         <Button
                           size="sm"
@@ -585,12 +712,7 @@ export function SettingsDialog() {
                     </div>
                   )}
                 </Section>
-                <p className="rounded-[10px] border border-[var(--border)] bg-[var(--surface-1)] px-3 py-2 text-[10px] leading-relaxed text-[var(--faint)]">
-                  {t("settings.keyStorage")}
-                </p>
-              </TabsContent>
 
-              <TabsContent value="data" className="space-y-3">
                 <Section title={t("settings.data")} description={t("settings.exportNote")}>
                   <div className="flex flex-wrap items-center gap-2">
                     <Button size="sm" variant="secondary" onClick={() => void exportSettings()}>
@@ -599,6 +721,15 @@ export function SettingsDialog() {
                     <Button size="sm" variant="secondary" onClick={() => importRef.current?.click()} disabled={importing}>
                       {importing ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
                       {t("settings.importSettings")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void exportAllChats()}
+                      disabled={exportingChats || chats.length === 0}
+                    >
+                      {exportingChats ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquare className="size-3.5" />}
+                      {isFa ? "پشتیبان همه‌ی گفتگوها" : "Backup all chats"}
                     </Button>
                     <input
                       ref={importRef}
@@ -612,55 +743,67 @@ export function SettingsDialog() {
                       }}
                     />
                   </div>
-                </Section>
 
-                <Section title={t("settings.reset")} description={t("settings.resetDesc")}>
-                  <Button variant="destructive" size="sm" onClick={() => setResetOpen(true)}>
-                    <Trash2 className="size-3.5" /> {t("settings.reset")}
-                  </Button>
-                </Section>
-              </TabsContent>
+                  <div className="h-px bg-[var(--border)]" />
 
-              <TabsContent value="about" className="space-y-3">
-                <Section title={t("settings.about")} description={t("settings.aboutBody")}>
-                  <dl className="grid grid-cols-2 gap-2">
-                    <div className="rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-2.5 py-2">
-                      <dt className="text-[9.5px] uppercase tracking-[0.12em] text-[var(--faint)]">
-                        {t("settings.version")}
-                      </dt>
-                      <dd className="mt-0.5 font-mono text-[11.5px] text-foreground">1.0.0</dd>
+                  <div className="space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-[11.5px] text-[var(--muted-foreground)]">
+                        {isFa
+                          ? "پاک کردن تاریخچه‌ی گفتگوها بدون حذف پرووایدرها و کلیدها"
+                          : "Clear all chats while keeping providers, keys, and settings."}
+                      </p>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setClearChatsOpen(true)}
+                        disabled={chats.length === 0}
+                      >
+                        <Trash2 className="size-3.5" /> {isFa ? "پاک کردن گفتگوها" : "Clear chats"}
+                      </Button>
                     </div>
-                    <div className="rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)]/40 px-2.5 py-2">
-                      <dt className="text-[9.5px] uppercase tracking-[0.12em] text-[var(--faint)]">
-                        {t("providers.title")}
-                      </dt>
-                      <dd className="mt-0.5 font-mono text-[11.5px] text-foreground">
-                        {providers.length} / {models.length}
-                      </dd>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-[11.5px] text-[var(--muted-foreground)]">{t("settings.resetDesc")}</p>
+                      <Button variant="destructive" size="sm" onClick={() => setResetOpen(true)}>
+                        <Trash2 className="size-3.5" /> {t("settings.reset")}
+                      </Button>
                     </div>
-                  </dl>
-                  <div className="space-y-1 text-[10.5px] leading-relaxed text-[var(--muted-foreground)]">
-                    <p>{t("capture.local")} · {t("capture.private")}</p>
-                    <p>{t("settings.keyStorage")}</p>
                   </div>
                 </Section>
               </TabsContent>
             </div>
           </Tabs>
 
-          <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border)] bg-[var(--surface-1)] px-4 py-2.5 sm:px-5">
-            <span className="hidden text-[10px] text-[var(--faint)] sm:inline">{t("settings.aboutBody")}</span>
-            <div className="ml-auto flex items-center gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
-                {t("common.close")}
-              </Button>
-              <Button size="sm" onClick={() => void save()}>
-                {t("settings.save")}
-              </Button>
-            </div>
+          <div className="stg-foot">
+            <GlowButton variant="secondary" size="sm" onClick={() => setOpen(false)}>
+              {t("common.close")}
+            </GlowButton>
+            <GlowButton size="sm" onClick={() => void save()}>
+              {t("settings.save")}
+            </GlowButton>
           </div>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={clearChatsOpen}
+        onOpenChange={setClearChatsOpen}
+        title={isFa ? "پاک کردن همه‌ی گفتگوها" : "Clear all chats"}
+        description={
+          isFa
+            ? "تمام گفتگوها و پیام‌های محلی پاک می‌شوند، اما پرووایدرها، کلیدها و تنظیمات شما حفظ می‌شوند."
+            : "All local chats and messages will be deleted, while your providers, API keys, and settings stay intact."
+        }
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        destructive
+        onConfirm={async () => {
+          await clearAllData();
+          await loadChats();
+          setClearChatsOpen(false);
+          toast.success(isFa ? "همه‌ی گفتگوها پاک شدند" : "All chats cleared");
+        }}
+      />
 
       <ConfirmDialog
         open={resetOpen}

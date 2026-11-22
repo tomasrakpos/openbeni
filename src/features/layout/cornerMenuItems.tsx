@@ -1,9 +1,8 @@
 // layout feature: cornerMenuItems; change its UI/flow here and keep related state/API calls in sync.
-import { Command, Cpu, LogOut, MessageSquare, MessageSquarePlus, Pencil, Pin, Trash2 } from "lucide-react";
+import { Command, MessageSquare, Pencil, Pin, Search, Server, SquarePen, Trash2 } from "lucide-react";
 import * as React from "react";
 import type { CornerMenuItem, CornerMenuSection } from "@/features/layout/CornerMenu";
 import { useT } from "@/lib/i18n";
-import { useAuthStore, type AuthUser } from "@/stores/auth";
 import { useChatsStore } from "@/stores/chats";
 import { useUiStore } from "@/stores/ui";
 
@@ -13,52 +12,25 @@ export interface ChatActions {
 }
 
 /**
- * The account chip: the provider picture when there is one, otherwise the first
- * letter of the name (or the email). It fills the same 28px chip as every other
- * menu icon, so the row looks untouched.
- */
-function userAvatar(user: AuthUser) {
-  return function UserAvatar() {
-    if (user.avatarUrl) {
-      return (
-        <img
-          src={user.avatarUrl}
-          alt=""
-          referrerPolicy="no-referrer"
-          style={{ width: 18, height: 18, borderRadius: 9999, objectFit: "cover" }}
-        />
-      );
-    }
-    const initial = (user.name || user.email || "?").trim().charAt(0).toUpperCase() || "?";
-    return (
-      <span aria-hidden="true" style={{ fontSize: 12, fontWeight: 600, lineHeight: 1 }}>
-        {initial}
-      </span>
-    );
-  };
-}
-
-/**
- * Items for the corner menu. Kept out of the component so the menu stays
- * generic: point it at a different config (or pass sections directly) and it
- * renders that instead.
+ * Items for the left navigation corner menu.
  */
 export function useCornerMenuSections(actions?: ChatActions): CornerMenuSection[] {
   const t = useT();
+  const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
+  const setSearchOpen = useUiStore((s) => s.setSearchOpen);
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen);
-  const setModelPickerOpen = useUiStore((s) => s.setModelPickerOpen);
   const chats = useChatsStore((s) => s.chats);
   const activeChatId = useChatsStore((s) => s.activeChatId);
-  const createChat = useChatsStore((s) => s.createChat);
+  const startNewChat = useChatsStore((s) => s.startNewChat);
   const selectChat = useChatsStore((s) => s.selectChat);
   const togglePin = useChatsStore((s) => s.togglePin);
-  const user = useAuthStore((s) => s.user);
-  const signOut = useAuthStore((s) => s.signOut);
 
   return React.useMemo(() => {
-    const chat = chats.find((item) => item.id === activeChatId);
-    const recent = [...chats].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8);
+    const recent = chats
+      .filter((item) => item.currentLeafId !== null || item.title.trim().length > 0)
+      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt)
+      .slice(0, 8);
     return [
       {
         id: "workspace",
@@ -66,16 +38,36 @@ export function useCornerMenuSections(actions?: ChatActions): CornerMenuSection[
           {
             id: "new-chat",
             label: t("nav.newChat"),
-            icon: MessageSquarePlus,
+            icon: SquarePen,
+            hue: 24,
             onClick: () => {
-              void createChat().then(() => setView("chat"));
+              startNewChat();
+              setView("chat");
             },
+          },
+          {
+            id: "search",
+            label: t("nav.search"),
+            icon: Search,
+            onClick: () => setSearchOpen(true),
           },
           {
             id: "palette",
             label: t("palette.actions"),
             icon: Command,
             onClick: () => setPaletteOpen(true),
+          },
+        ],
+      },
+      {
+        id: "providers",
+        items: [
+          {
+            id: "providers-page",
+            label: t("palette.providers"),
+            icon: Server,
+            active: view === "providers",
+            onClick: () => setView("providers"),
           },
         ],
       },
@@ -87,7 +79,8 @@ export function useCornerMenuSections(actions?: ChatActions): CornerMenuSection[
               items: recent.map((item): CornerMenuItem => ({
                 id: `chat-${item.id}`,
                 label: item.title.trim() || "…",
-                icon: MessageSquare,
+                icon: item.pinned ? Pin : MessageSquare,
+                hue: item.pinned ? 38 : undefined,
                 active: item.id === activeChatId,
                 onClick: () => {
                   void selectChat(item.id).then(() => setView("chat"));
@@ -118,55 +111,18 @@ export function useCornerMenuSections(actions?: ChatActions): CornerMenuSection[
             },
           ]
         : []),
-      {
-        id: "model",
-        items: [
-          {
-            id: "switch-model",
-            label: t("palette.switchModel"),
-            icon: Cpu,
-            onClick: () => {
-              if (chat?.providerId && chat.modelId) setModelPickerOpen(true);
-              else setView("providers");
-            },
-          },
-        ],
-      },
-      ...(user
-        ? [
-            {
-              id: "account",
-              title: t("auth.account"),
-              items: [
-                {
-                  id: "account-user",
-                  label: user.name || user.email || t("auth.account"),
-                  icon: userAvatar(user),
-                },
-                {
-                  id: "sign-out",
-                  label: t("auth.signOut"),
-                  icon: LogOut,
-                  hue: 0,
-                  onClick: () => void signOut(),
-                },
-              ],
-            },
-          ]
-        : []),
     ];
   }, [
     actions,
     activeChatId,
     chats,
-    createChat,
-    setModelPickerOpen,
+    startNewChat,
     setPaletteOpen,
+    setSearchOpen,
     setView,
     selectChat,
-    signOut,
     t,
     togglePin,
-    user,
+    view,
   ]);
 }

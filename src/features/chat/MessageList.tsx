@@ -2,9 +2,11 @@
 import { ArrowDown } from "lucide-react";
 import * as React from "react";
 import { EmptyState } from "@/features/chat/EmptyState";
-import { MessageItem } from "@/features/chat/MessageItem";
 import { useT } from "@/lib/i18n";
+import { loadMessageItem } from "@/lib/preload";
 import { activeThread, useChatsStore } from "@/stores/chats";
+
+const MessageItem = React.lazy(loadMessageItem);
 
 export function MessageList() {
   const t = useT();
@@ -81,27 +83,29 @@ export function MessageList() {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain"
         role="log"
         aria-live="polite"
         aria-label={t("chat.conversation")}
       >
         <div
           ref={contentRef}
-          className="mx-auto w-full max-w-[860px] px-4 pt-[calc(var(--header-h)+16px)] sm:px-6"
+          className="mx-auto w-full max-w-[860px] px-4 pt-[calc(var(--header-h)+44px)] sm:px-6"
           // The composer floats over this scroller (see ChatView). Pad the
           // content by its live height so the newest message can always rest
           // *above* the glass instead of being trapped under it.
           style={{ paddingBottom: "calc(var(--thread-composer-h, 176px) + 24px)" }}
         >
-          {thread.map((message, index) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              streaming={streaming}
-              isLast={index === thread.length - 1}
-            />
-          ))}
+          <React.Suspense fallback={null}>
+            {thread.map((message, index) => (
+              <MessageItem
+                key={message.id}
+                message={message}
+                streaming={streaming}
+                isLast={index === thread.length - 1}
+              />
+            ))}
+          </React.Suspense>
         </div>
       </div>
       {!atBottom && (

@@ -66,6 +66,8 @@ export type MorphMenuItem = {
   label: React.ReactNode;
   icon?: React.ReactNode;
   meta?: React.ReactNode;
+  /** Optional small non-interactive section caption rendered immediately above this row. */
+  sectionHeader?: React.ReactNode;
   checked?: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -123,7 +125,7 @@ function pressTransition(pressed: boolean) {
   return pressed ? "none" : "opacity 420ms cubic-bezier(.22,1,.36,1)";
 }
 
-function MorphMenuRow({
+const MorphMenuRow = React.memo(function MorphMenuRow({
   item,
   onSelect,
 }: {
@@ -171,7 +173,12 @@ function MorphMenuRow({
         item.checked && "text-foreground",
         item.disabled && "pointer-events-none opacity-40",
       )}
-      style={{ opacity: pressed ? 0.18 : 1, transition: pressTransition(pressed) }}
+      style={{
+        opacity: pressed ? 0.18 : 1,
+        transition: pressTransition(pressed),
+        contentVisibility: "auto",
+        containIntrinsicSize: "auto 44px",
+      }}
     >
       {item.icon ? (
         <span className="grid size-4 shrink-0 place-items-center text-[var(--faint)]" aria-hidden="true">
@@ -187,7 +194,7 @@ function MorphMenuRow({
       ) : null}
     </button>
   );
-}
+});
 
 export function MorphMenu({
   items,
@@ -214,6 +221,8 @@ export function MorphMenu({
   const phaseRef = React.useRef<"closed" | "opening" | "open" | "closing">("closed");
   const animRef = React.useRef<number | null>(null);
   const queuedRef = React.useRef<boolean | null>(null);
+  const lastBlurRef = React.useRef<number>(-1);
+  const lastTriggerHiddenRef = React.useRef<boolean | null>(null);
 
   const reduced = React.useMemo(
     () =>
@@ -272,23 +281,36 @@ export function MorphMenu({
     card.style.visibility = "visible";
     card.style.opacity = String(value[11]);
     card.style.pointerEvents = value[11] >= 0.5 ? "auto" : "none";
-    card.style.left = `${left}px`;
-    card.style.top = `${top}px`;
-    card.style.width = `${widthPx}px`;
-    card.style.height = `${heightPx}px`;
-    card.style.borderRadius = `${radiusTop}px ${radiusTop}px ${radiusBottom}px ${radiusBottom}px`;
+    card.style.transform = `translate3d(${left.toFixed(2)}px, ${top.toFixed(2)}px, 0)`;
+    card.style.width = `${widthPx.toFixed(2)}px`;
+    card.style.height = `${heightPx.toFixed(2)}px`;
+    card.style.borderRadius = `${radiusTop.toFixed(2)}px ${radiusTop.toFixed(2)}px ${radiusBottom.toFixed(2)}px ${radiusBottom.toFixed(2)}px`;
 
     // The reference fades the card itself in over the trigger. Until the card
     // is actually opaque, leave the trigger's label visible underneath so the
     // user never sees an empty dark box.
-    if (triggerRef.current) {
-      triggerRef.current.style.opacity = value[11] >= 0.5 ? "0" : "";
+    const hideTrigger = value[11] >= 0.5;
+    if (triggerRef.current && lastTriggerHiddenRef.current !== hideTrigger) {
+      lastTriggerHiddenRef.current = hideTrigger;
+      triggerRef.current.style.opacity = hideTrigger ? "0" : "";
     }
 
+    // Keep content pinned to the final menu dimensions and center via GPU
+    // translate3d + scale so morphing card width/height triggers ZERO inner
+    // row layout reflows even with hundreds of models.
+    const cx = (widthPx - rects.end.width) / 2;
+    const cy = (heightPx - rects.end.height) / 2;
     content.style.opacity = String(value[9]);
-    content.style.transform = `scale(${value[7]})`;
-    content.style.filter = `blur(${value[8]}px)`;
-    list.style.filter = `blur(${value[10]}px)`;
+    content.style.transform = `translate3d(${cx.toFixed(2)}px, ${cy.toFixed(2)}px, 0) scale(${value[7].toFixed(4)})`;
+
+    // Single quantized blur pass on content only (avoids double Gaussian passes
+    // and avoids rasterizing the full offscreen scroll list).
+    const rawBlur = Math.max(value[8], value[10] * 0.6);
+    const nextBlur = rawBlur > 0.08 ? Math.round(rawBlur * 2) / 2 : 0;
+    if (nextBlur !== lastBlurRef.current) {
+      lastBlurRef.current = nextBlur;
+      content.style.filter = nextBlur > 0 ? `blur(${nextBlur}px)` : "none";
+    }
   }, []);
 
   const finish = React.useCallback(
@@ -401,16 +423,19 @@ export function MorphMenu({
     const widthPx = Math.max(180, Math.min(width, viewportWidth - margin * 2));
 
     // Reset any leftover close frame before measuring the natural height.
+    card.style.transform = "translate3d(0px, 0px, 0)";
     card.style.height = "auto";
     card.style.width = `${widthPx}px`;
-    card.style.left = "0px";
-    card.style.top = "0px";
     if (contentRef.current) {
+      contentRef.current.style.position = "relative";
+      contentRef.current.style.width = "100%";
+      contentRef.current.style.height = "auto";
       contentRef.current.style.opacity = "1";
       contentRef.current.style.transform = "none";
       contentRef.current.style.filter = "none";
     }
     if (listRef.current) listRef.current.style.filter = "none";
+    lastBlurRef.current = 0;
 
     const naturalHeight = card.offsetHeight;
     const maxHeight = Math.max(48, Math.round(viewportHeight * 0.72));
@@ -455,6 +480,15 @@ export function MorphMenu({
       start,
       end: { left, top, right: left + widthPx, bottom: top + heightPx, width: widthPx, height: heightPx },
     };
+    // Lock content to the final card size so morphing card width/height never
+    // triggers inner layout reflows across all menu items.
+    if (contentRef.current) {
+      contentRef.current.style.position = "absolute";
+      contentRef.current.style.left = "0px";
+      contentRef.current.style.top = "0px";
+      contentRef.current.style.width = `${widthPx}px`;
+      contentRef.current.style.height = `${heightPx}px`;
+    }
     return true;
   }, [align, sideOffset, width]);
 
@@ -565,10 +599,13 @@ export function MorphMenu({
     nodes[next]?.focus({ preventScroll: true });
   };
 
-  const handleSelect = (item: MorphMenuItem) => {
-    item.onSelect();
-    onOpenChange(false);
-  };
+  const handleSelect = React.useCallback(
+    (item: MorphMenuItem) => {
+      item.onSelect();
+      onOpenChange(false);
+    },
+    [onOpenChange],
+  );
 
   const hidden = !open && !mounted;
   if (hidden && typeof document === "undefined") return null;
@@ -583,9 +620,9 @@ export function MorphMenu({
       data-morph-menu=""
       onKeyDown={onKeyDown}
       className={cn(
-        "fixed z-[80] overflow-hidden border border-[var(--border-strong)]",
+        "fixed left-0 top-0 z-[80] overflow-hidden border border-[var(--border-strong)]",
         "bg-[color-mix(in_oklab,var(--surface-1)_99%,transparent)]",
-        "shadow-[0_18px_50px_-20px_rgba(0,0,0,.55)] backdrop-blur-xl backdrop-saturate-150",
+        "shadow-[0_18px_50px_-20px_rgba(0,0,0,.55)]",
         className,
       )}
       style={{
@@ -595,13 +632,18 @@ export function MorphMenu({
         borderBottomRightRadius: FINAL_RADIUS,
         borderBottomLeftRadius: FINAL_RADIUS,
         touchAction: "manipulation",
-        willChange: "left, top, width, height, border-radius",
+        contain: "layout style",
+        willChange: "transform, width, height, border-radius, opacity",
       }}
     >
       <div
         ref={contentRef}
         className="flex h-full w-full flex-col p-1.5"
-        style={{ transformOrigin: "center center", willChange: "transform, opacity, filter" }}
+        style={{
+          transformOrigin: "center center",
+          contain: "layout style paint",
+          willChange: "transform, opacity, filter",
+        }}
       >
         {heading ? (
           <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--faint)]">
@@ -613,8 +655,21 @@ export function MorphMenu({
           className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain"
           style={{ touchAction: "pan-y" }}
         >
-          {items.map((item) => (
-            <MorphMenuRow key={item.id} item={item} onSelect={handleSelect} />
+          {items.map((item, idx) => (
+            <React.Fragment key={item.id}>
+              {item.sectionHeader ? (
+                <div
+                  role="presentation"
+                  className={cn(
+                    "px-2.5 pb-1 text-[10px] font-semibold tracking-[0.04em] text-[var(--faint)]",
+                    idx > 0 ? "mt-1.5 border-t border-[var(--border)] pt-2" : "pt-1",
+                  )}
+                >
+                  {item.sectionHeader}
+                </div>
+              ) : null}
+              <MorphMenuRow item={item} onSelect={handleSelect} />
+            </React.Fragment>
           ))}
         </div>
       </div>
@@ -623,7 +678,7 @@ export function MorphMenu({
 
   return (
     <>
-      <style>{`[data-morph-trigger]{position:relative;touch-action:manipulation}[data-morph-trigger]::after{content:"";position:absolute;inset:-7px 0;border-radius:999px}`}</style>
+      <style>{`[data-morph-trigger]{position:relative;touch-action:manipulation}[data-morph-trigger]:not(.ogb-btn)::after{content:"";position:absolute;inset:-7px 0;border-radius:999px}`}</style>
       {trigger({
         ref: triggerRef,
         onClick: (event) => {

@@ -37,12 +37,44 @@ export function authHeadersFor(provider: ProviderRow, key: string): Record<strin
   return headerValue(provider, key);
 }
 
-function headerValue(provider: ProviderRow, key: string): Record<string, string> {
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...(provider.extra_headers ?? {}) };
+export function formatAuthHeaderValue(prefix: string | null | undefined, key: string): string {
+  const rawPrefix = prefix ?? "";
+  if (!rawPrefix) return key;
+  // Ensure a space after word-style schemes like "Bearer" or "Token" when the
+  // trailing space was accidentally omitted (e.g. "Bearer" -> "Bearer sk-...").
+  if (/[A-Za-z0-9]$/.test(rawPrefix) && !/^\s/.test(key)) {
+    return `${rawPrefix} ${key}`;
+  }
+  return `${rawPrefix}${key}`;
+}
+
+function headerValue(provider: ProviderRow, key: string, stream = false): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: stream ? "text/event-stream, application/json" : "application/json",
+    ...(stream ? { "Accept-Encoding": "identity" } : {}),
+    ...(provider.extra_headers ?? {}),
+  };
   if (provider.auth_header) {
-    headers[provider.auth_header] = `${provider.auth_prefix ?? ""}${key}`;
+    headers[provider.auth_header] = formatAuthHeaderValue(provider.auth_prefix, key);
   }
   return headers;
+}
+
+/**
+ * Remove `stream_options` from a JSON RequestInit body when an OpenAI-compatible
+ * upstream gateway rejects unknown fields with HTTP 400/422.
+ */
+export function stripStreamOptions(init: RequestInit): RequestInit | null {
+  if (typeof init.body !== "string") return null;
+  try {
+    const parsed = JSON.parse(init.body) as Record<string, unknown>;
+    if (!("stream_options" in parsed)) return null;
+    delete parsed.stream_options;
+    return { ...init, body: JSON.stringify(parsed) };
+  } catch {
+    return null;
+  }
 }
 
 export function buildUpstreamRequest(
@@ -51,7 +83,7 @@ export function buildUpstreamRequest(
   body: ChatBody,
   stream: boolean,
 ): { url: string; init: RequestInit } {
-  const headers = headerValue(provider, apiKey);
+  const headers = headerValue(provider, apiKey, stream);
   const format: ApiFormat = provider.api_format ?? "openai";
 
   if (format === "anthropic") {
@@ -99,7 +131,8 @@ export function buildUpstreamRequest(
     };
     if (system) payload.systemInstruction = { parts: [{ text: system }] };
     const key = provider.auth_header ? "" : apiKey;
-    const url = `${normalizeProviderBaseUrl(provider.base_url, format)}/models/${encodeURIComponent(body.model)}:${
+    const cleanModel = body.model.replace(/^models\//i, "");
+    const url = `${normalizeProviderBaseUrl(provider.base_url, format)}/models/${encodeURIComponent(cleanModel)}:${
       stream ? "streamGenerateContent?alt=sse" : "generateContent"
     }`;
     if (key) headers["x-goog-api-key"] = key;
@@ -174,20 +207,38 @@ export function normalizeJson(format: ApiFormat, payload: unknown): NormalizedJs
   };
 }
 
-interface StreamStats {
-  textChars: number;
+export interface StreamStats {
   promptTokens?: number;
   completionTokens?: number;
+  textChars: number;
+  streamError?: string;
+}
+
+const SECRET_TOKEN_RE =
+  /(?:sk-(?:proj-|ant-|or-v1-|live-|test-)?|AIza|gsk_|xai-|hf_|r8_|glpat-)[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9._\-]{12,}/gi;
+
+export function scrubSecretText(text: string): string {
+  return text.replace(SECRET_TOKEN_RE, "[redacted]");
+}
+
+function extractStreamErrorMessage(parsed: Record<string, unknown>): string | null {
+  const err = parsed.error;
+  if (typeof err === "string" && err.trim()) return scrubSecretText(err.trim().slice(0, 300));
+  if (err && typeof err === "object") {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === "string" && msg.trim()) return scrubSecretText(msg.trim().slice(0, 300));
+  }
+  return null;
 }
 
 /**
- * Convert Anthropic/Gemini SSE into OpenAI-compatible chunks and track output
- * size so the caller can record usage without storing message content.
+ * Convert Anthropic/Gemini/custom SSE into OpenAI-compatible chunks and track
+ * output size so the caller can record usage without storing message content.
  */
 export function normalizeStream(
   format: ApiFormat,
-  upstream: ReadableStream<Uint8Array>,
-  onDone: (stats: StreamStats) => void,
+  _upstream: ReadableStream<Uint8Array>,
+  onDone: (stats: StreamStats) => void | Promise<void>,
 ): TransformStream<Uint8Array, Uint8Array> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -199,25 +250,45 @@ export function normalizeStream(
   };
 
   const handleEvent = (controller: TransformStreamDefaultController<Uint8Array>, data: string) => {
+    if (!data || data === "[DONE]") return;
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(data) as Record<string, unknown>;
     } catch {
       return;
     }
+
+    // Surface mid-stream provider errors across all formats so the client never
+    // silently displays an empty or truncated reply.
+    if (parsed.type === "error" || parsed.error) {
+      const errMsg = extractStreamErrorMessage(parsed) ?? "The upstream provider terminated the stream with an error.";
+      stats.streamError = errMsg;
+      if (format !== "openai") {
+        emit(controller, { error: { message: errMsg } });
+      }
+      return;
+    }
+
     if (format === "anthropic") {
       const type = parsed.type;
-      if (type === "content_block_delta") {
-        const delta = parsed.delta as { text?: string } | undefined;
+      if (type === "message_start") {
+        const message = parsed.message as { usage?: { input_tokens?: number } } | undefined;
+        if (typeof message?.usage?.input_tokens === "number") {
+          stats.promptTokens = message.usage.input_tokens;
+        }
+      } else if (type === "content_block_delta") {
+        const delta = parsed.delta as { type?: string; text?: string; thinking?: string } | undefined;
         if (delta?.text) {
           stats.textChars += delta.text.length;
           emit(controller, { choices: [{ delta: { content: delta.text } }] });
+        } else if (delta?.thinking) {
+          emit(controller, { choices: [{ delta: { reasoning_content: delta.thinking } }] });
         }
       } else if (type === "message_delta") {
         const usage = parsed.usage as { input_tokens?: number; output_tokens?: number } | undefined;
         if (usage) {
-          stats.promptTokens = usage.input_tokens;
-          stats.completionTokens = usage.output_tokens;
+          if (typeof usage.input_tokens === "number") stats.promptTokens = usage.input_tokens;
+          if (typeof usage.output_tokens === "number") stats.completionTokens = usage.output_tokens;
         }
         const delta = parsed.delta as { stop_reason?: string } | undefined;
         emit(controller, { choices: [{ delta: {}, finish_reason: delta?.stop_reason ?? "stop" }] });
@@ -227,14 +298,28 @@ export function normalizeStream(
     if (format === "gemini") {
       const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
       const first = (candidates[0] ?? {}) as { content?: { parts?: unknown[] }; finishReason?: string };
-      const text = (first.content?.parts ?? [])
-        .map((part) => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-          ? ((part as { text: string }).text)
-          : ""))
-        .join("");
-      if (text) {
+      let text = "";
+      let reasoning = "";
+      for (const part of first.content?.parts ?? []) {
+        if (!part || typeof part !== "object") continue;
+        const p = part as { text?: unknown; thought?: unknown };
+        if (typeof p.text === "string") {
+          if (p.thought === true) reasoning += p.text;
+          else text += p.text;
+        }
+      }
+      if (text || reasoning) {
         stats.textChars += text.length;
-        emit(controller, { choices: [{ delta: { content: text } }] });
+        emit(controller, {
+          choices: [
+            {
+              delta: {
+                ...(text ? { content: text } : {}),
+                ...(reasoning ? { reasoning_content: reasoning } : {}),
+              },
+            },
+          ],
+        });
       }
       const usage = parsed.usageMetadata as { promptTokenCount?: number; candidatesTokenCount?: number } | undefined;
       if (usage) {
@@ -244,15 +329,30 @@ export function normalizeStream(
       if (first.finishReason) emit(controller, { choices: [{ delta: {}, finish_reason: first.finishReason }] });
       return;
     }
-    // OpenAI: pass through untouched; count content and scavenge usage.
+
+    // OpenAI and custom OpenAI-compatible streams: scavenge usage and counts.
     const usage = parsed.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     if (usage) {
       stats.promptTokens = usage.prompt_tokens;
       stats.completionTokens = usage.completion_tokens;
     }
     const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
-    const delta = (choices[0] as { delta?: { content?: unknown } } | undefined)?.delta;
+    const delta = (choices[0] as { delta?: { content?: unknown; reasoning_content?: unknown } } | undefined)?.delta;
     if (typeof delta?.content === "string") stats.textChars += delta.content.length;
+
+    // For "custom" format, emit normalized OpenAI chunks when non-OpenAI-passthrough
+    // payloads arrive (previously "custom" chunks were never enqueued at all!).
+    if (format === "custom") {
+      if (choices.length > 0 || usage) {
+        emit(controller, parsed);
+      } else if (typeof parsed.text === "string" && parsed.text) {
+        stats.textChars += parsed.text.length;
+        emit(controller, { choices: [{ delta: { content: parsed.text } }] });
+      } else if (typeof parsed.content === "string" && parsed.content) {
+        stats.textChars += parsed.content.length;
+        emit(controller, { choices: [{ delta: { content: parsed.content } }] });
+      }
+    }
   };
 
   return new TransformStream<Uint8Array, Uint8Array>({
@@ -271,7 +371,9 @@ export function normalizeStream(
       }
       if (format === "openai") controller.enqueue(chunk);
     },
-    flush(controller) {
+    async flush(controller) {
+      // Flush any trailing multi-byte UTF-8 sequence (e.g. Persian/emoji)
+      buffer += decoder.decode();
       const tail = buffer.trim();
       if (tail) {
         for (const line of tail.split(/\r?\n/)) {
@@ -279,14 +381,16 @@ export function normalizeStream(
         }
       }
       if (format !== "openai") {
-        const usage = {
-          ...(stats.promptTokens !== undefined ? { prompt_tokens: stats.promptTokens } : {}),
-          ...(stats.completionTokens !== undefined ? { completion_tokens: stats.completionTokens } : {}),
-        };
-        emit(controller, { choices: [{ delta: {}, finish_reason: "stop" }], usage });
+        if (!stats.streamError) {
+          const usage = {
+            ...(stats.promptTokens !== undefined ? { prompt_tokens: stats.promptTokens } : {}),
+            ...(stats.completionTokens !== undefined ? { completion_tokens: stats.completionTokens } : {}),
+          };
+          emit(controller, { choices: [{ delta: {}, finish_reason: "stop" }], usage });
+        }
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       }
-      onDone(stats);
+      await onDone(stats);
     },
   });
 }

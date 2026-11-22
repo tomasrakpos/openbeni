@@ -12,13 +12,15 @@ const DialogClose = DialogPrimitive.Close;
 
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
->(({ className, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay> & { rise?: boolean }
+>(({ className, rise = false, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
       "fixed inset-0 z-50 bg-[rgba(4,6,12,0.62)] backdrop-blur-[3px]",
-      "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
+      rise
+        ? "dialog-overlay-rise"
+        : "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0",
       className,
     )}
     {...props}
@@ -33,10 +35,12 @@ const DialogContent = React.forwardRef<
     variant?: "default" | "corner";
     /** Use the shared corner-menu card frame (border, gradient, shadow, 20px radius). */
     frame?: boolean;
+    /** Animate opening and closing smoothly from the bottom up. */
+    rise?: boolean;
   }
->(({ className, children, hideClose, variant = "default", frame = false, ...props }, ref) => (
+>(({ className, children, hideClose, variant = "default", frame = false, rise = false, ...props }, ref) => (
   <DialogPortal>
-    <DialogOverlay />
+    <DialogOverlay rise={rise} />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
@@ -49,11 +53,13 @@ const DialogContent = React.forwardRef<
             ? "fixed left-1/2 top-1/2 z-50 grid w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-[22px] p-5 cm-surface"
             : "fixed inset-x-0 bottom-0 z-50 grid w-full gap-4 rounded-t-[22px] border border-[var(--border)] bg-[color-mix(in_oklab,var(--surface-1)_88%,transparent)] p-5 shadow-lg backdrop-blur-xl backdrop-saturate-150 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-h-[88vh] sm:w-[min(680px,calc(100vw-2rem))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-[20px] sm:p-6",
         frame ? "max-h-[92dvh] overflow-x-hidden overflow-y-auto" : "max-h-[92dvh] overflow-y-auto safe-bottom",
-        frame
-          ? "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-90 data-[state=closed]:zoom-out-95"
-          : variant === "corner"
+        rise
+          ? "dialog-rise"
+          : frame
             ? "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-90 data-[state=closed]:zoom-out-95"
-            : "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 data-[state=open]:slide-in-from-bottom-4 sm:data-[state=open]:slide-in-from-bottom-2",
+            : variant === "corner"
+              ? "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-90 data-[state=closed]:zoom-out-95"
+              : "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 data-[state=open]:slide-in-from-bottom-4 sm:data-[state=open]:slide-in-from-bottom-2",
         className,
       )}
       {...props}

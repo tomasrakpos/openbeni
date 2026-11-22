@@ -1,0 +1,174 @@
+================================================================================
+پروژه توسعه‌یافته openbeni (OpenHarneks) — راهنمای جایگزینی روی لوکال و گزارش دقیق تغییرات
+================================================================================
+
+توجه مهم:
+این نسخه، «نسخه توسعه‌یافته، ممیزی‌شده و آماده دیپلوی» پروژه openbeni است.
+برای استفاده، باید فایل‌های این نسخه را **جایگزین پروژه فعلی روی سیستم لوکال خود کنید**
+و سپس روی Git / Cloudflare Pages منتشر نمایید.
+
+--------------------------------------------------------------------------------
+۱) روش امن جایگزینی روی پروژه فعلی لوکال
+--------------------------------------------------------------------------------
+۱. پیش از جایگزینی، از فایل `.env` فعلی خود (اگر مقادیر واقعی داخلش دارید) و در صورت نیاز
+   از پوشه پروژه فعلی یک بکاپ بگیرید.
+۲. تمام فایل‌ها و پوشه‌های این نسخه (`src/`، `functions/`، `public/`، `supabase/`،
+   `tests/`، `package.json`، `package-lock.json`، `vite.config.ts`، `.env.example` و...)
+   را جایگزین پروژه فعلی روی لوکال کنید.
+   - فایل `.env` واقعی خودتان را نگه دارید (یا از روی `.env.example` جدید بسازید و
+     متغیرهای جدید را در صورت نیاز اضافه کنید).
+   - پوشه `node_modules/` و `dist/` نیاز به کپی ندارند؛ پس از جایگزینی با دستور زیر
+     دوباره ساخته می‌شوند.
+۳. در ترمینال داخل پوشه پروژه اجرا کنید:
+      npm install
+      npx tsc -b --noEmit
+      npx vitest run
+      npx vite build
+۴. برای اجرای لوکال:
+      npm run dev
+۵. در Supabase SQL Editor، فایل‌های Migration جدید را به ترتیب اجرا کنید:
+      supabase/migrations/0004_credits_and_tokens.sql
+      supabase/migrations/0005_user_providers.sql
+      supabase/migrations/0006_free_model_routers.sql
+   (اگر دیتابیس کاملاً جدید است، از `0001_init.sql` تا `0006_free_model_routers.sql`
+   به ترتیب اجرا شوند.)
+
+--------------------------------------------------------------------------------
+۲) فهرست دقیق تغییرات و قابلیت‌های توسعه‌یافته در این نسخه
+--------------------------------------------------------------------------------
+
+الف) قابلیت‌های جدید بک‌اند و دیتابیس (Cloudflare Pages Functions + Supabase)
+--------------------------------------------------------------------------------
+1. سیستم Free Model Router (روتر خودکار مدل‌های رایگان):
+   - Migration جدید: `supabase/migrations/0006_free_model_routers.sql`
+     (ستون `pricing` برای `catalog_models` و `user_models`، جداول `routers` و
+     `router_members`، RLS و تریگرهای همگام‌سازی خودکار مدل‌های رایگان).
+   - هسته مشترک روتینگ: `src/lib/routerEngine.ts`
+     (الگوریتم Round-Robin و Failover حداکثر ۳ تلاش فقط پیش از شروع استریم،
+     بدون ریستارت میان‌استریم).
+   - اندپوینت‌ها و هندلرهای سرور:
+     `functions/api/_lib/routersHandler.ts`
+     `functions/api/routers.ts`
+     `functions/api/routers/[id].ts`
+     و مسیر Path 0 (`executeRouterChat`) در `functions/api/_lib/serverChat.ts`.
+   - استور و رابط کاربری: `src/stores/routers.ts` + بخش مدیریت روترها در پنل ادمین
+     و انتخاب‌گر مدل.
+
+2. سیستم BYOK / پرووایدرهای شخصی کاربر و معافیت از کریدیت سایت:
+   - Migration جدید: `supabase/migrations/0005_user_providers.sql`
+     (جداول `user_providers`، `user_models` و ستون‌های `billing_source`،
+     `credits_charged` و `user_provider_id` روی `usage_events`).
+   - اندپوینت‌ها: `functions/api/_lib/userProviders.ts` و `functions/api/user-providers/[[path]].ts`
+     با رمزنگاری AES-256-GCM کلیدها روی سرور.
+   - قانون قطعی بیلینگ در `functions/api/_lib/serverChat.ts`:
+     مدل‌های پیش‌فرض سایت (`billing_source = 'site'`) کریدیت کم می‌کنند، اما
+     پرووایدرهای اضافه‌شده توسط کاربر (`billing_source = 'byok'`) هرگز کریدیت و سهمیه
+     سایت را مصرف نمی‌کنند.
+
+3. سیستم کریدیت (۵ کریدیت اولیه) و توکن‌های API شخصی کاربر:
+   - Migration جدید: `supabase/migrations/0004_credits_and_tokens.sql`
+     (ستون `credits` با پیش‌فرض ۵، تابع اتمیک `consume_user_credits` و جدول `user_tokens`).
+   - اندپوینت‌ها: `functions/api/_lib/tokenHandlers.ts` و `functions/api/tokens/[[path]].ts`.
+
+4. موتور هوشمند بررسی سلامت کلید و تشخیص مدل‌های Free/Paid:
+   - `functions/api/_lib/providerInspector.ts`
+   - `functions/api/provider-inspect.ts`
+   - `src/lib/providerInspectClient.ts`
+   (تشخیص خودکار فرمت، لیست مدل‌ها، پراب زنده ۱ توکنی چت برای تشخیص کلید نامعتبر یا
+   بی‌اعتبار، و دسته‌بندی دقیق `free` / `paid` / `unknown` بدون حدس اشتباه).
+
+5. سیستم ۴ مهارت بک‌اند (Chat, Web Builder, Game Builder, Deep Research) و پیش‌نمایش زنده:
+   - `functions/api/_lib/previewIntent.ts`
+   - `functions/api/_lib/projectBuilderPrompt.ts`
+   - `functions/api/_lib/skills/*`
+   - `functions/api/preview-intent.ts`
+   - ابزارهای استودیوی پیش‌نمایش در `src/features/preview/*`، `src/features/chat/SkillPicker.tsx`،
+     `src/features/chat/ArtifactCard.tsx` و `src/features/layout/MobilePreviewPager.tsx`.
+
+ب) اصلاحات ریشه‌ای پایداری چت، استریم، ادمین، احراز هویت و همگام‌سازی زنده
+--------------------------------------------------------------------------------
+1. اصلاح حذف کامل استریم پرووایدرهای Custom و بهبود SSE (`functions/api/_lib/upstream.ts` و `src/lib/sse.ts`):
+   - رفع باگ بحرانی حذف ۱۰۰٪ چانک‌ها در فرمت `custom` داخل `normalizeStream`.
+   - ثبت `input_tokens` در `message_start` برای Anthropic.
+   - ارسال و نمایش خطاهای میان‌استریم SSE (OpenAI و Anthropic) به‌جای نمایش پیام خالی.
+   - فراخوانی `decoder.decode()` در `flush()` برای جلوگیری از شکست حروف چندبایتی فارسی/ایموجی.
+   - پاک‌سازی (scrub) خودکار کلیدهای API نشت‌کرده از متن خطاهای upstream.
+
+2. اصلاح سازگاری با پرووایدرهای OpenAI-compatible بدون پشتیبانی `stream_options`:
+   - در `functions/api/_lib/providerKeys.ts` و `src/lib/chatClient.ts`:
+     در صورت دریافت خطای `400/422` به‌دلیل `stream_options`، یک بار به‌طور خودکار
+     بدون `stream_options` درخواست تکرار می‌شود (بدون cooldown کردن کلید).
+
+3. اصلاح ساخت هدر احراز هویت و نرمال‌سازی آدرس پرووایدر:
+   - `functions/api/_lib/upstream.ts` و `src/lib/http.ts`:
+     تزریق خودکار فاصله بعد از پیشوندهایی مثل `Bearer` در صورت جا افتادن فاصله انتهایی
+     (جلوگیری از ساخت `Bearersk-...` و خطای 401).
+   - `src/lib/normalize.ts`:
+     افزودن جدول `KNOWN_HOST_API_PREFIX` هماهنگ با بک‌اند (`openrouter.ai -> /api/v1`،
+     `api.groq.com -> /openai/v1`، `coarena.ai -> /api/v1` و...).
+
+4. اصلاح همگام‌سازی فوری پنل ادمین ↔ سایت عمومی روی Cloudflare Pages:
+   - `functions/api/_lib/adminHandlers.ts` و `functions/api/_lib/routersHandler.ts`:
+     تبدیل تمام فراخوانی‌های `void broadcastCatalogChange(env)` به `await broadcastCatalogChange(env)`
+     (با timeout محدود ۲.۵ ثانیه‌ای) تا runtime کلودفلر پیام Realtime را قبل از ارسال قطع نکند.
+   - حفظ `display_name` سفارشی ادمین هنگام تست مجدد پرووایدر (جلوگیری از بازنویسی اسم مدل).
+   - گزارش خطای صریح در صورت شکست ذخیره در دیتابیس و نمایش وضعیت خطای تست (401/404/timeout)
+     روی کارت پرووایدر در `src/features/admin/AdminPage.tsx`.
+   - تنظیم هدر `Cache-Control: no-store, max-age=0` روی `/api/models` و `/api/routers`.
+   - یکپارچه‌سازی کانال Realtime بین `src/stores/catalog.ts` و `src/stores/routers.ts`
+     روی کانال واحد `"catalog"` (نصف شدن مصرف کانکشن Realtime) + فعال‌سازی `CACHE_TTL`
+     و backoff نمایی برای polling.
+
+5. اصلاح گزارش خطای مدل‌های تاییدنشده و تضمین کسر کریدیت/ثبت مصرف:
+   - `functions/api/_lib/serverChat.ts`:
+     برگرداندن خطای مشخص `503` با کد `model_unverified` وقتی مدلی فعال است ولی هنوز
+     تست پرووایدر را نگذرانده (به‌جای 404 گنگ).
+   - `await` کردن `consumeCredit` و `recordUsage` (در پاسخ JSON و داخل `async flush()` استریم)
+     تا در Cloudflare Workers نیمه‌کاره قطع نشوند.
+
+6. اصلاح چرخش کلیدها، Timeout و لغو درخواست‌ها:
+   - `functions/api/_lib/urlGuard.ts`: حفظ `init.signal` فراخواننده و تفکیک `TimeoutError` از `AbortError`.
+   - `functions/api/_lib/supabase.ts`: افزودن timeout مشخص به `sbFetch` (۱۰ثانیه)،
+     `verifyAccessToken` (۸ثانیه) و `broadcastCatalogChange` (۲.۵ثانیه).
+   - `functions/api/_lib/providerKeys.ts`: تفکیک خطاهای timeout (504)، شبکه (502)،
+     احراز هویت (401/403) و rate-limit (429) و scrub کامل کلیدها.
+
+7. اصلاح ثبت‌نام، Google OAuth، نشست و تضمین یک‌بار بودن ۵ کریدیت اولیه:
+   - `functions/api/_lib/auth.ts`:
+     جایگزینی `resolution=merge-duplicates` با `resolution=ignore-duplicates` + خواندن
+     مجدد ردیف موجود در صورت تداخل هم‌زمان؛ در نتیجه ۵ کریدیت اولیه دقیقاً یک‌بار
+     اعطا می‌شود و هرگز در ورودهای بعدی ریست نمی‌شود.
+   - `src/stores/auth.ts`:
+     پاک کردن `?code=` و `#access_token=` از URL پس از بازگشت Google OAuth،
+     پشتیبانی از رویداد `INITIAL_SESSION`، و پاک‌سازی صحیح نشست هنگام دریافت `401`
+     از `/api/session`.
+   - `src/lib/serverChat.ts`:
+     افزودن یک بار `refreshSession()` خودکار هنگام 401، timeout بیکاری ۹۰ ثانیه روی استریم،
+     و نرمال‌سازی فیلدهای `usage` در حالت پاسخ JSON.
+
+ج) آماده‌سازی برای دیپلوی روی Cloudflare Pages
+--------------------------------------------------------------------------------
+1. بررسی کامل `functions/api/*`: بدون هیچ استفاده از `process.env` یا ماژول‌های Node-only
+   (کاملاً سازگار با Cloudflare Pages Functions).
+2. افزودن fallback ایمن `context.env ?? {}` در:
+   `functions/api/routers.ts`، `functions/api/routers/[id].ts`،
+   `functions/api/preview-intent.ts` و `functions/api/provider-inspect.ts`.
+3. تایید SPA fallback (`public/_redirects` با محتوای `/* /index.html 200`) و هدرهای امنیتی
+   (`public/_headers`) و کپی شدن هر دو در خروجی `dist/`.
+4. کامل کردن فایل `.env.example` با نام تمام متغیرهای سرور و فرانت‌اند بدون هیچ مقدار واقعی.
+
+د) بهبودهای برندینگ، ظاهر و تجربه کاربری (نسخه‌های قبلی تا امروز)
+--------------------------------------------------------------------------------
+- لوگوی شفاف `public/brand/wordmark.png`، دکمه‌ها و کامپوننت‌های Glass UI،
+  نشانگر کریدیت (`CreditJellyGauge.tsx`)، منوها و پنل ادمین دو‌زبانه (EN/FA)،
+  چیدمان ریسپانسیو دسکتاپ و موبایل، و بهبود جریان اضافه کردن پرووایدر و انتخاب مدل.
+
+--------------------------------------------------------------------------------
+۳) وضعیت تست و بیلد تاییدشده
+--------------------------------------------------------------------------------
+- TypeScript Check (`npx tsc -b --noEmit`): 0 خطا
+- Automated Tests (`npx vitest run`): 25 فایل تست / 247 تست همگی پاس‌شده
+  (شامل تست‌های جدید `tests/freeRouter.test.ts` و `tests/fullStackAuditFixes.test.ts`)
+- Production Build (`npx vite build`): موفق (3870 ماژول، خروجی آماده در `dist/`)
+
+================================================================================

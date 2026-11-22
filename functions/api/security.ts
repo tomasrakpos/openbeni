@@ -45,8 +45,20 @@ export function allowedOrigin(request: Request, env: SecurityEnv): string | null
   if (!origin) return null;
   const configured = parseOrigins(env);
   if (configured.length > 0) return configured.includes(origin) ? origin : null;
-  const requestOrigin = new URL(request.url).origin;
-  if (origin === requestOrigin) return origin;
+  const requestUrl = new URL(request.url);
+  if (origin === requestUrl.origin) return origin;
+  // Behind TLS-terminating reverse proxies (e.g. e2b.app, Cloudflare Tunnel,
+  // nginx) that forward plain HTTP without X-Forwarded-Proto, the browser's
+  // Origin is https://<host> while request.url sees http://<host>. Matching
+  // the exact host over https:// is strictly same-origin.
+  try {
+    const originUrl = new URL(origin);
+    if (originUrl.protocol === "https:" && originUrl.host.toLowerCase() === requestUrl.host.toLowerCase()) {
+      return origin;
+    }
+  } catch {
+    // Malformed Origin header — reject.
+  }
   if (LOCAL_ORIGINS.includes(origin)) return origin;
   return null;
 }
@@ -71,6 +83,10 @@ export function apiHeaders(request: Request, env: SecurityEnv, extra?: Record<st
     headers.set(
       "Access-Control-Allow-Headers",
       ALLOWED_REQUEST_HEADERS,
+    );
+    headers.set(
+      "Access-Control-Expose-Headers",
+      "X-Billing-Source, X-Credits-Charged, X-Preview-Intent, X-Preview-Category, X-Preview-Source, X-Skill-Id, X-Skill-Source, X-Skill-Search-Count",
     );
     headers.set("Access-Control-Max-Age", "600");
   }

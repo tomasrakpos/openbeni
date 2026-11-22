@@ -1,5 +1,6 @@
 // App state ui; change state/actions here and keep local persistence in sync.
 import { create } from "zustand";
+import type { SkillMode } from "@/lib/types";
 
 export type View = "chat" | "providers";
 export type RightTab = "preview" | "files" | "versions";
@@ -22,6 +23,8 @@ interface UiState {
   previewDevice: PreviewDevice;
   sidebarMobileOpen: boolean;
   mobilePanelOpen: boolean;
+  selectedArtifactMessageId: string | null;
+  skillMode: SkillMode;
   focusComposer: number;
   setView: (view: View) => void;
   setPaletteOpen: (open: boolean) => void;
@@ -38,6 +41,8 @@ interface UiState {
   setPreviewDevice: (device: PreviewDevice) => void;
   setSidebarMobileOpen: (open: boolean) => void;
   setMobilePanelOpen: (open: boolean) => void;
+  setSelectedArtifactMessageId: (messageId: string | null) => void;
+  setSkillMode: (mode: SkillMode) => void;
   requestComposerFocus: () => void;
 }
 
@@ -57,6 +62,8 @@ export const useUiStore = create<UiState>()((set) => ({
   previewDevice: "desktop",
   sidebarMobileOpen: false,
   mobilePanelOpen: false,
+  selectedArtifactMessageId: null,
+  skillMode: "auto",
   focusComposer: 0,
   setView: (view) => set({ view }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
@@ -73,5 +80,7 @@ export const useUiStore = create<UiState>()((set) => ({
   setPreviewDevice: (previewDevice) => set({ previewDevice }),
   setSidebarMobileOpen: (sidebarMobileOpen) => set({ sidebarMobileOpen }),
   setMobilePanelOpen: (mobilePanelOpen) => set({ mobilePanelOpen }),
+  setSelectedArtifactMessageId: (selectedArtifactMessageId) => set({ selectedArtifactMessageId }),
+  setSkillMode: (skillMode) => set({ skillMode }),
   requestComposerFocus: () => set((state) => ({ focusComposer: state.focusComposer + 1 })),
 }));

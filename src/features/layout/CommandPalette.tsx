@@ -5,13 +5,14 @@ import {
   Cpu,
   Download,
   Languages,
-  MessageSquarePlus,
+  MessageSquare,
   Moon,
   PanelLeft,
   PanelRight,
   Search,
   Server,
   Settings,
+  SquarePen,
   Sun,
   TextCursorInput,
   Zap,
@@ -46,6 +47,7 @@ export function CommandPalette() {
   const messages = useChatsStore((s) => s.messages);
   const activeChatId = useChatsStore((s) => s.activeChatId);
   const createChat = useChatsStore((s) => s.createChat);
+  const startNewChat = useChatsStore((s) => s.startNewChat);
   const selectChat = useChatsStore((s) => s.selectChat);
   const setChatModel = useChatsStore((s) => s.setChatModel);
 
@@ -79,7 +81,10 @@ export function CommandPalette() {
     return out;
   }, [models, providers]);
 
-  const recentChats = React.useMemo(() => chats.slice(0, 8), [chats]);
+  const recentChats = React.useMemo(
+    () => chats.filter((item) => item.currentLeafId !== null || item.title.trim().length > 0).slice(0, 8),
+    [chats],
+  );
   const chat = chats.find((item) => item.id === activeChatId);
 
   const run = (action: () => void | Promise<void>) => {
@@ -118,12 +123,14 @@ export function CommandPalette() {
             <CommandGroup heading={t("palette.actions")}>
               <CommandItem
                 value={`${t("palette.newChat")} new chat`}
-                onSelect={() => run(async () => {
-                  await createChat();
-                  setView("chat");
-                })}
+                onSelect={() =>
+                  run(() => {
+                    startNewChat();
+                    setView("chat");
+                  })
+                }
               >
-                <MessageSquarePlus />
+                <SquarePen />
                 {t("palette.newChat")}
                 <CommandShortcut>⌘⇧O</CommandShortcut>
               </CommandItem>
@@ -223,7 +230,7 @@ export function CommandPalette() {
                       })
                     }
                   >
-                    <MessageSquarePlus />
+                    <MessageSquare />
                     <span className="truncate">{item.title || t("chat.newChatTitle")}</span>
                     {item.id === activeChatId ? (
                       <span className="ml-auto rounded-full bg-[var(--primary-soft)] px-1.5 text-[9px] text-[var(--primary)]">

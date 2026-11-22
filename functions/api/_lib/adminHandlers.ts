@@ -25,13 +25,14 @@
  *   PATCH  /api/admin/settings
  */
 
-import { encryptSecret } from "./crypto";
+import { decryptSecret, encryptSecret } from "./crypto";
 import { getSettings, requireAdmin, type AuthEnv } from "./auth";
 import {
   handleAdminLogin,
   verifyAdminToken,
   type AdminAuthEnv,
 } from "./adminAuth";
+import { inspectProvider, type ProviderInspectResult } from "./providerInspector";
 import {
   callWithRotation,
   getProvider,
@@ -40,6 +41,13 @@ import {
   type ProviderRow,
   type RotationEnv,
 } from "./providerKeys";
+import {
+  createAdminRouter,
+  deleteAdminRouter,
+  listAdminRouters,
+  syncAdminProviderRouters,
+  updateAdminRouter,
+} from "./routersHandler";
 import { authHeadersFor } from "./upstream";
 import { broadcastCatalogChange, eq, sbJson, supabaseConfigured } from "./supabase";
 import { validateProviderBaseUrl, normalizeProviderBaseUrl, type ProviderFormat } from "./urlGuard";
@@ -86,6 +94,7 @@ interface CatalogRow {
   context_window: number | null;
   capabilities: string[] | null;
   tier: string | null;
+  pricing?: "free" | "paid" | "unknown" | null;
   enabled: boolean;
   upstream_verified: boolean;
   site_paid?: boolean;
@@ -94,17 +103,6 @@ interface CatalogRow {
 }
 
 const MAX_DISCOVERED_MODELS = 500;
-
-/**
- * Tier shown in the public model list.
- *
- * A model that answers with the site's own keys is usable by everyone, so it is
- * labelled "free". A model that does not answer is labelled "paid": the site
- * cannot cover it, so using it would require a paid key of the user's own.
- */
-function tierForTest(ok: boolean): "free" | "paid" {
-  return ok ? "free" : "paid";
-}
 
 /* -------------------------------------------------------------------------- */
 /* Providers                                                                  */
@@ -201,7 +199,7 @@ async function createProvider(request: Request, env: AdminEnv): Promise<Response
       return jsonError(request, env, 500, "Could not store the provider keys; the provider was not created.");
     }
   }
-  void broadcastCatalogChange(env);
+  await broadcastCatalogChange(env);
   return json(request, env, { provider: summarizeProvider(provider, keys.length ? await listProviderKeys(env, provider.id) : []) }, 201);
 }
 
@@ -264,7 +262,7 @@ async function updateProvider(request: Request, env: AdminEnv, id: string): Prom
   });
   const provider = rows[0];
   if (!provider) return jsonError(request, env, 500, "Could not update the provider.");
-  void broadcastCatalogChange(env);
+  await broadcastCatalogChange(env);
   return json(request, env, { provider: summarizeProvider(provider, await listProviderKeys(env, id)) });
 }
 
@@ -275,7 +273,7 @@ async function deleteProvider(request: Request, env: AdminEnv, id: string): Prom
     method: "DELETE",
     headers: { Prefer: "return=minimal" },
   });
-  void broadcastCatalogChange(env);
+  await broadcastCatalogChange(env);
   return json(request, env, { deleted: true });
 }
 
@@ -284,7 +282,7 @@ async function deleteAllProviders(request: Request, env: AdminEnv): Promise<Resp
     method: "DELETE",
     headers: { Prefer: "return=minimal" },
   });
-  void broadcastCatalogChange(env);
+  await broadcastCatalogChange(env);
   return json(request, env, { deleted: true });
 }
 
@@ -306,7 +304,7 @@ async function addKeys(request: Request, env: AdminEnv, providerId: string): Pro
     keys,
     keys.map((_, index) => str(labels[index], 60)),
   );
-  void broadcastCatalogChange(env);
+  await broadcastCatalogChange(env);
   const rows = await listProviderKeys(env, providerId);
   return json(request, env, { provider: summarizeProvider(provider, rows) });
 }
@@ -318,7 +316,7 @@ async function removeKey(request: Request, env: AdminEnv, providerId: string, ke
     method: "DELETE",
     headers: { Prefer: "return=minimal" },
   });
-  void broadcastCatalogChange(env);
+  await broadcastCatalogChange(env);
   const rows = await listProviderKeys(env, providerId);
   return json(request, env, { provider: summarizeProvider(provider, rows) });
 }
@@ -397,13 +395,94 @@ async function runProviderTest(request: Request, env: AdminEnv, providerId: stri
   const usable = keys.filter((key) => key.enabled);
   if (usable.length === 0) return jsonError(request, env, 400, "Add at least one key before testing.");
 
-  // One /models call imports every model the provider exposes. Probing each
-  // model with a chat completion made this slow and silently dropped anything
-  // past the old 40-model cap.
-  const listing = await fetchUpstreamModels(env, provider, usable);
-  if (!listing.ok) return jsonError(request, env, 502, listing.message, "test_failed");
+  const master = env.MASTER_ENCRYPTION_KEY?.trim() ?? "";
+  let inspection: ProviderInspectResult | null = null;
+  let healthyKeysCount = 0;
 
-  const discovered = listing.models.slice(0, MAX_DISCOVERED_MODELS);
+  if (master) {
+    for (const keyRow of usable.slice(0, 5)) {
+      let plainKey = "";
+      try {
+        plainKey = await decryptSecret(master, keyRow.ciphertext);
+      } catch {
+        continue;
+      }
+      const res = await inspectProvider({
+        baseUrl: provider.base_url,
+        apiKey: plainKey,
+        format: provider.api_format ?? "openai",
+        authHeader: provider.auth_header ?? undefined,
+        authPrefix: provider.auth_prefix ?? undefined,
+        extraHeaders: provider.extra_headers ?? {},
+        maxModels: MAX_DISCOVERED_MODELS,
+        verifyKeyLive: true,
+      });
+      if (res.keyHealth.ok) healthyKeysCount += 1;
+      if (!inspection || (res.models.length > 0 && (!inspection.ok || res.keyHealth.ok))) {
+        inspection = res;
+      }
+      // Stop early once we have a verified healthy key + full model catalog.
+      if (res.keyHealth.ok && res.models.length > 0 && usable.length === 1) break;
+    }
+  }
+
+  // Fallback to legacy fetchUpstreamModels if decryption wasn't possible in tests
+  if (!inspection) {
+    const listing = await fetchUpstreamModels(env, provider, usable);
+    if (!listing.ok) return jsonError(request, env, 502, listing.message, "test_failed");
+    const fallbackModels = listing.models.slice(0, MAX_DISCOVERED_MODELS).map((entry) => ({
+      id: entry.id,
+      displayName: entry.displayName ?? entry.id,
+      contextWindow: entry.contextWindow,
+      capabilities: ["text"],
+      tier: "unknown" as const,
+      tierSource: "unknown" as const,
+    }));
+    inspection = {
+      ok: true,
+      format: provider.api_format ?? "openai",
+      baseUrl: provider.base_url,
+      keyHealth: { status: "healthy", ok: true, latencyMs: null, message: "Models discovered." },
+      summary: {
+        totalModels: fallbackModels.length,
+        freeCount: 0,
+        paidCount: 0,
+        unknownCount: fallbackModels.length,
+        modelsLatencyMs: null,
+        chatLatencyMs: null,
+      },
+      models: fallbackModels,
+    };
+  }
+
+  if (inspection.models.length === 0) {
+    const httpStatus = inspection.keyHealth.httpStatus;
+    const errStatus =
+      httpStatus === 401 || httpStatus === 403
+        ? httpStatus
+        : httpStatus === 404
+          ? 404
+          : httpStatus === 408 || httpStatus === 504
+            ? 504
+            : 502;
+    const errCode =
+      httpStatus === 401 || httpStatus === 403
+        ? "auth_failed"
+        : httpStatus === 404
+          ? "not_found"
+          : httpStatus === 408 || httpStatus === 504
+            ? "timeout"
+            : "test_failed";
+    return jsonError(
+      request,
+      env,
+      errStatus,
+      inspection.keyHealth.message || inspection.error || "The provider did not respond.",
+      errCode,
+    );
+  }
+
+  const discovered = inspection.models.slice(0, MAX_DISCOVERED_MODELS);
 
   let existing: CatalogRow[] = [];
   try {
@@ -418,14 +497,23 @@ async function runProviderTest(request: Request, env: AdminEnv, providerId: stri
 
   const rows = discovered.map((entry) => {
     const old = previous.get(entry.id);
+    // Strict pricing classification: NEVER guess "free" when provider metadata
+    // or official pricing policy returned "unknown".
+    const detectedPricing: "free" | "paid" | "unknown" =
+      entry.tier === "free" || entry.tier === "paid" || entry.tier === "unknown"
+        ? entry.tier
+        : "unknown";
+    const effectivePricing: "free" | "paid" | "unknown" = old?.site_paid ? "paid" : detectedPricing;
     return {
       provider_id: providerId,
       upstream_id: entry.id,
-      display_name: entry.displayName ?? entry.id,
+      // Preserve an admin's custom display name across re-tests instead of
+      // silently overwriting it with the upstream model ID.
+      display_name: old?.display_name || entry.displayName || entry.id,
       context_window: entry.contextWindow ?? old?.context_window ?? null,
-      capabilities: ["text"],
-      // Preserve the admin's visibility / paid choice when re-testing.
-      tier: old?.tier ?? tierForTest(true),
+      capabilities: entry.capabilities.length > 0 ? entry.capabilities : ["text"],
+      tier: effectivePricing,
+      pricing: effectivePricing,
       enabled: old ? old.enabled : true,
       site_paid: old?.site_paid ?? false,
       upstream_verified: true,
@@ -433,16 +521,53 @@ async function runProviderTest(request: Request, env: AdminEnv, providerId: stri
   });
 
   if (rows.length > 0) {
+    let saved = false;
+    let saveError = "";
     try {
       await sbJson(env, "catalog_models?on_conflict=provider_id,upstream_id", {
         method: "POST",
         headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
         body: JSON.stringify(rows),
       });
-    } catch {
-      // A partial failure still returns the test results.
+      saved = true;
+    } catch (err1) {
+      saveError = err1 instanceof Error ? err1.message : "Database write failed.";
+      // Fallback 1: deployments before 0006_free_model_routers.sql (no `pricing` column)
+      try {
+        const legacyRows = rows.map(({ pricing: _p, ...rest }) => rest);
+        await sbJson(env, "catalog_models?on_conflict=provider_id,upstream_id", {
+          method: "POST",
+          headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify(legacyRows),
+        });
+        saved = true;
+      } catch (err2) {
+        saveError = err2 instanceof Error ? err2.message : saveError;
+        // Fallback 2: deployments before 0002_model_visibility.sql (no `site_paid` or `pricing`)
+        try {
+          const minimalRows = rows.map(({ pricing: _p, site_paid: _s, ...rest }) => rest);
+          await sbJson(env, "catalog_models?on_conflict=provider_id,upstream_id", {
+            method: "POST",
+            headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+            body: JSON.stringify(minimalRows),
+          });
+          saved = true;
+        } catch (err3) {
+          saveError = err3 instanceof Error ? err3.message : saveError;
+        }
+      }
     }
-    void broadcastCatalogChange(env);
+    if (!saved) {
+      return jsonError(
+        request,
+        env,
+        500,
+        `Discovered ${rows.length} model(s), but failed to save them to the database: ${saveError}`,
+        "catalog_save_failed",
+      );
+    }
+    await syncAdminProviderRouters(env, providerId);
+    await broadcastCatalogChange(env);
   }
 
   const catalog = await sbJson<CatalogRow[]>(
@@ -451,13 +576,88 @@ async function runProviderTest(request: Request, env: AdminEnv, providerId: stri
   );
   return json(request, env, {
     tested: discovered.length,
-    healthy: discovered.length,
-    results: discovered.map((entry) => ({ id: entry.id, ok: true })),
-    models: catalog,
+    healthy: inspection.keyHealth.ok ? discovered.length : 0,
+    healthyKeys: healthyKeysCount,
+    totalKeys: usable.length,
+    keyHealth: inspection.keyHealth,
+    summary: inspection.summary,
+    results: discovered.map((entry) => ({
+      id: entry.id,
+      ok: inspection!.keyHealth.ok,
+      tier: entry.tier,
+      pricing: entry.tier,
+      tierSource: entry.tierSource,
+    })),
+    models: catalog.map(normalizeCatalogRow),
   });
 }
 
-async function updateModel(request: Request, env: AdminEnv, modelId: string): Promise<Response> {  const parsed = await readJsonBody(request);
+function normalizeCatalogRow(row: CatalogRow): CatalogRow & { paid: boolean; pricing: "free" | "paid" | "unknown" } {
+  const pricing: "free" | "paid" | "unknown" = row.site_paid
+    ? "paid"
+    : row.pricing === "free" || row.pricing === "paid" || row.pricing === "unknown"
+      ? row.pricing
+      : row.tier === "free" || row.tier === "paid"
+        ? row.tier
+        : "unknown";
+  return {
+    ...row,
+    pricing,
+    paid: Boolean(row.site_paid || pricing === "paid"),
+  };
+}
+
+async function bulkUpdateProviderModels(
+  request: Request,
+  env: AdminEnv,
+  providerId: string,
+): Promise<Response> {
+  const provider = await getProvider(env, providerId);
+  if (!provider) return jsonError(request, env, 404, "Provider not found.");
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok || !isObject(parsed.value)) return jsonError(request, env, 400, "Invalid request body.");
+  const action = str(parsed.value.action, 30);
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (action === "show_all") patch.enabled = true;
+  else if (action === "hide_all") patch.enabled = false;
+  else if (action === "free_all") {
+    patch.site_paid = false;
+    patch.tier = "free";
+    patch.pricing = "free";
+  } else if (action === "paid_all") {
+    patch.site_paid = true;
+    patch.tier = "paid";
+    patch.pricing = "paid";
+  } else {
+    return jsonError(request, env, 400, "Unsupported bulk action.");
+  }
+
+  try {
+    await sbJson(env, `catalog_models?provider_id=${eq(providerId)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify(patch),
+    });
+  } catch {
+    // Fallback for older schemas without site_paid or pricing
+    const { site_paid: _ignored, pricing: _p, ...fallbackPatch } = patch;
+    await sbJson(env, `catalog_models?provider_id=${eq(providerId)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify(fallbackPatch),
+    });
+  }
+  await syncAdminProviderRouters(env, providerId);
+  await broadcastCatalogChange(env);
+  const catalog = await sbJson<CatalogRow[]>(
+    env,
+    `catalog_models?select=*&provider_id=${eq(providerId)}&order=display_name.asc`,
+  );
+  return json(request, env, { models: catalog.map(normalizeCatalogRow) });
+}
+
+async function updateModel(request: Request, env: AdminEnv, modelId: string): Promise<Response> {
+  const parsed = await readJsonBody(request);
   if (!parsed.ok || !isObject(parsed.value)) return jsonError(request, env, 400, "Invalid request body.");
   const body = parsed.value;
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -469,16 +669,36 @@ async function updateModel(request: Request, env: AdminEnv, modelId: string): Pr
   const enabled = bool(body.enabled);
   if (enabled !== undefined) patch.enabled = enabled;
   const paid = bool(body.paid);
-  if (paid !== undefined) patch.site_paid = paid;
+  if (paid !== undefined) {
+    patch.site_paid = paid;
+    patch.tier = paid ? "paid" : "free";
+    patch.pricing = paid ? "paid" : "free";
+  }
+  if (body.pricing === "free" || body.pricing === "paid" || body.pricing === "unknown") {
+    patch.pricing = body.pricing;
+    patch.tier = body.pricing;
+    patch.site_paid = body.pricing === "paid";
+  }
 
-  const rows = await sbJson<CatalogRow[]>(env, `catalog_models?id=${eq(modelId)}`, {
-    method: "PATCH",
-    headers: { Prefer: "return=representation" },
-    body: JSON.stringify(patch),
-  });
+  let rows: CatalogRow[];
+  try {
+    rows = await sbJson<CatalogRow[]>(env, `catalog_models?id=${eq(modelId)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(patch),
+    });
+  } catch {
+    const { site_paid: _ignored, pricing: _p, ...fallbackPatch } = patch;
+    rows = await sbJson<CatalogRow[]>(env, `catalog_models?id=${eq(modelId)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify(fallbackPatch),
+    });
+  }
   if (!rows[0]) return jsonError(request, env, 404, "Model not found.");
-  void broadcastCatalogChange(env);
-  return json(request, env, { model: rows[0] });
+  await syncAdminProviderRouters(env, rows[0].provider_id);
+  await broadcastCatalogChange(env);
+  return json(request, env, { model: normalizeCatalogRow(rows[0]) });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -492,25 +712,117 @@ interface UsageSummaryRow {
   requests: number | null;
 }
 
+interface UserModelUsageEvent {
+  user_id: string;
+  provider_id?: string | null;
+  model_name: string | null;
+  provider_name: string | null;
+  billing_source?: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  created_at: string;
+}
+
+export interface AdminUserModelUsage {
+  model: string;
+  provider: string;
+  source: "admin" | "default";
+  messages: number;
+  tokens: number;
+  lastUsedAt: string;
+}
+
+const ONLINE_WINDOW_MS = 5 * 60_000;
+
 async function listUsers(request: Request, env: AdminEnv): Promise<Response> {
-  const profiles = await sbJson<Record<string, unknown>[]>(env, "profiles?select=*&order=created_at.desc&limit=1000");
-  let summaries: UsageSummaryRow[] = [];
-  try {
-    summaries = await sbJson<UsageSummaryRow[]>(env, "user_usage_summary?select=*");
-  } catch {
-    summaries = [];
-  }
+  const [profiles, summaries, events, adminProviders] = await Promise.all([
+    sbJson<Record<string, unknown>[]>(env, "profiles?select=*&order=created_at.desc&limit=1000"),
+    sbJson<UsageSummaryRow[]>(env, "user_usage_summary?select=*").catch(() => [] as UsageSummaryRow[]),
+    sbJson<UserModelUsageEvent[]>(
+      env,
+      "usage_events?select=user_id,provider_id,model_name,provider_name,prompt_tokens,completion_tokens,created_at&order=created_at.desc&limit=50000",
+    ).catch(() => [] as UserModelUsageEvent[]),
+    sbJson<{ id: string; name: string }[]>(env, "providers?select=id,name").catch(
+      () => [] as { id: string; name: string }[],
+    ),
+  ]);
+
+  const adminProviderIds = new Set(adminProviders.map((p) => p.id));
   const byUser = new Map(summaries.map((row) => [row.user_id, row]));
+  const modelsByUser = new Map<string, Map<string, AdminUserModelUsage>>();
+  const countByUser = new Map<string, { messages: number; tokens: number; latestAt: string }>();
+
+  for (const ev of events) {
+    const uid = String(ev.user_id ?? "");
+    if (!uid) continue;
+    const tokens = Number(ev.prompt_tokens ?? 0) + Number(ev.completion_tokens ?? 0);
+    const modelName = (ev.model_name ?? "").trim() || "Unknown model";
+    const providerName = (ev.provider_name ?? "").trim() || "OpenHarneks";
+    const isAdminProvider = Boolean(ev.provider_id && adminProviderIds.has(ev.provider_id));
+    const source: "admin" | "default" = isAdminProvider ? "admin" : "default";
+
+    const totals = countByUser.get(uid) ?? { messages: 0, tokens: 0, latestAt: "" };
+    totals.messages += 1;
+    totals.tokens += tokens;
+    if (ev.created_at && ev.created_at > totals.latestAt) totals.latestAt = ev.created_at;
+    countByUser.set(uid, totals);
+
+    let modelMap = modelsByUser.get(uid);
+    if (!modelMap) {
+      modelMap = new Map<string, AdminUserModelUsage>();
+      modelsByUser.set(uid, modelMap);
+    }
+    const key = `${source}::${modelName}`;
+    const existing = modelMap.get(key) ?? {
+      model: modelName,
+      provider: providerName,
+      source,
+      messages: 0,
+      tokens: 0,
+      lastUsedAt: ev.created_at,
+    };
+    existing.messages += 1;
+    existing.tokens += tokens;
+    if (ev.created_at && ev.created_at > existing.lastUsedAt) existing.lastUsedAt = ev.created_at;
+    modelMap.set(key, existing);
+  }
+
+  const now = Date.now();
   const data = profiles.map((profile) => {
-    const usage = byUser.get(String(profile.id));
+    const id = String(profile.id);
+    const usage = byUser.get(id);
+    const evCount = countByUser.get(id);
     const input = Number(usage?.prompt_tokens ?? 0);
     const output = Number(usage?.completion_tokens ?? 0);
+    const totalTokens = Math.max(input + output, evCount?.tokens ?? 0);
+    const requests = Math.max(Number(usage?.requests ?? 0), evCount?.messages ?? 0);
+
+    const rawLastSeen = typeof profile.last_seen_at === "string" ? profile.last_seen_at : "";
+    const effectiveLastSeen =
+      evCount?.latestAt && (!rawLastSeen || evCount.latestAt > rawLastSeen)
+        ? evCount.latestAt
+        : rawLastSeen;
+    const lastSeenMs = effectiveLastSeen ? Date.parse(effectiveLastSeen) : Number.NaN;
+    const online = Number.isFinite(lastSeenMs) && now - lastSeenMs <= ONLINE_WINDOW_MS;
+    const offlineDays = Number.isFinite(lastSeenMs)
+      ? Math.max(0, Math.floor((now - lastSeenMs) / 86_400_000))
+      : null;
+
+    const modelsUsed = [...(modelsByUser.get(id)?.values() ?? [])].sort(
+      (a, b) => b.messages - a.messages || b.tokens - a.tokens,
+    );
+
     return {
       ...profile,
+      last_seen_at: effectiveLastSeen || rawLastSeen,
+      online,
+      offlineDays,
       inputTokens: input,
       outputTokens: output,
-      totalTokens: input + output,
-      requests: Number(usage?.requests ?? 0),
+      totalTokens,
+      requests,
+      messagesSent: requests,
+      modelsUsed,
     };
   });
   return json(request, env, { users: data });
@@ -808,17 +1120,27 @@ export async function handleAdmin(request: Request, env: AdminEnv = {}): Promise
       if (id && third === "test" && method === "POST") {
         return await runProviderTest(request, env, id);
       }
-      if (id && third === "models" && method === "GET") {
+      if (id && third === "models" && !fourth && method === "GET") {
         const models = await sbJson<CatalogRow[]>(
           env,
           `catalog_models?select=*&provider_id=${eq(id)}&order=display_name.asc`,
         );
-        return json(request, env, { models });
+        return json(request, env, { models: models.map(normalizeCatalogRow) });
+      }
+      if (id && third === "models" && fourth === "bulk" && method === "POST") {
+        return await bulkUpdateProviderModels(request, env, id);
       }
     }
 
     if (first === "models" && id && method === "PATCH") {
       return await updateModel(request, env, id);
+    }
+
+    if (first === "routers") {
+      if (!id && method === "GET") return await listAdminRouters(request, env);
+      if (!id && method === "POST") return await createAdminRouter(request, env);
+      if (id && method === "PATCH") return await updateAdminRouter(request, env, id);
+      if (id && method === "DELETE") return await deleteAdminRouter(request, env, id);
     }
 
     if (first === "users") {

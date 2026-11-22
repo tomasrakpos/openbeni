@@ -1,17 +1,22 @@
 // chat feature: ThreadComposer; change its UI/flow here and keep related state/API calls in sync.
-import { Mic, MicOff } from "lucide-react";
+import { Coins, Lock, Mic, MicOff } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { GlassButton } from "@/components/ui/glass-button";
 import PromptComposer from "@/components/ui/prompt-composer";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { buildComposerModels, resolveComposerModelId } from "@/features/chat/modelOptions";
 import { IntelligencePicker } from "@/features/chat/IntelligencePicker";
+import { SkillPicker } from "@/features/chat/SkillPicker";
 import { useVoiceInput } from "@/features/chat/useVoiceInput";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ChatParams } from "@/lib/types";
+import { useAuthStore } from "@/stores/auth";
 import { activeThread, resolveTarget, useChatsStore } from "@/stores/chats";
 import { useAllModels, useAllProviders } from "@/stores/catalog";
+import { buildCombinedRouters, isRouterSelectionId, useRoutersStore } from "@/stores/routers";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
@@ -32,7 +37,17 @@ export function ThreadComposer() {
   const setParams = useChatsStore((s) => s.setParams);
   const providers = useAllProviders();
   const models = useAllModels();
+  const publicRouters = useRoutersStore((s) => s.publicRouters);
+  const localRouters = useRoutersStore((s) => s.localRouters);
+  const combinedRouters = React.useMemo(
+    () => buildCombinedRouters(publicRouters, localRouters, providers, models),
+    [publicRouters, localRouters, providers, models],
+  );
   const focusSignal = useUiStore((s) => s.focusComposer);
+  const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
+  const skillMode = useUiStore((s) => s.skillMode);
+  const setSkillMode = useUiStore((s) => s.setSkillMode);
+  const signedIn = useAuthStore((s) => s.signedIn);
 
   const chat = chats.find((c) => c.id === activeChatId) ?? null;
   const resolved = chat ? resolveTarget(chat) : null;
@@ -41,7 +56,10 @@ export function ThreadComposer() {
   const [text, setText] = React.useState("");
   const [busyFiles, setBusyFiles] = React.useState(false);
 
-  const modelOptions = React.useMemo(() => buildComposerModels(providers, models), [providers, models]);
+  const modelOptions = React.useMemo(
+    () => (signedIn ? buildComposerModels(providers, models, combinedRouters, lang) : []),
+    [signedIn, providers, models, combinedRouters, lang],
+  );
 
   const selectedModelId = React.useMemo(
     () => resolveComposerModelId(modelOptions, models, chat?.modelId ?? ""),
@@ -82,11 +100,28 @@ export function ThreadComposer() {
   };
 
   const handleModelChange = (modelId: string) => {
+    if (isRouterSelectionId(modelId)) {
+      void setChatModel("router", modelId);
+      return;
+    }
     const row = models.find((model) => model.id === modelId);
     if (row) void setChatModel(row.providerId, row.id);
   };
 
   const handleSubmit = async ({ prompt, modelId }: { prompt: string; modelId: string }) => {
+    if (!useAuthStore.getState().signedIn) {
+      setAuthGateOpen(true);
+      return;
+    }
+    if (isRouterSelectionId(modelId)) {
+      const router = combinedRouters.find((r) => r.selectionId === modelId);
+      if (!router || router.activeMemberCount === 0) return;
+      if (chat && (chat.providerId !== "router" || chat.modelId !== router.selectionId)) {
+        await setChatModel("router", router.selectionId);
+      }
+      await send(prompt);
+      return;
+    }
     const row = models.find((model) => model.id === modelId);
     if (!row) return;
     if (chat && (chat.providerId !== row.providerId || chat.modelId !== row.id)) {
@@ -99,42 +134,35 @@ export function ThreadComposer() {
     void setParams(patch);
   };
 
-  const actionButtonClass = cn(
-    "relative grid size-8 place-items-center rounded-[10px] transition-colors duration-150",
-    "text-[color-mix(in_oklab,var(--foreground)_55%,transparent)]",
-    "hover:bg-[color-mix(in_oklab,var(--foreground)_10%,transparent)] hover:text-[color-mix(in_oklab,var(--foreground)_90%,transparent)]",
-    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-    "disabled:opacity-40 disabled:hover:bg-transparent",
-  );
-
   const leadingActions = (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
-          type="button"
+        <GlassButton
+          variant="icon"
+          active={voice.listening}
           onClick={() => (voice.listening ? voice.stop() : voice.start())}
           disabled={!voice.supported}
           aria-label={voice.listening ? t("chat.listening") : t("chat.voice")}
           aria-pressed={voice.listening}
           className={cn(
-            actionButtonClass,
-            voice.listening &&
-              "bg-[var(--destructive-soft)] text-[var(--destructive)] hover:bg-[var(--destructive-soft)] hover:text-[var(--destructive)]",
+            voice.listening && "!text-[var(--destructive)]",
           )}
         >
           {voice.listening ? (
-            <MicOff size={18} strokeWidth={1.75} aria-hidden="true" />
+            <MicOff size={14} strokeWidth={1.75} aria-hidden="true" />
           ) : (
-            <Mic size={18} strokeWidth={1.75} aria-hidden="true" />
+            <Mic size={14} strokeWidth={1.75} aria-hidden="true" />
           )}
           {voice.listening && (
-            <span className="absolute right-1 top-1 size-1.5 rounded-full bg-[var(--destructive)]" aria-hidden="true" />
+            <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-[var(--destructive)]" aria-hidden="true" />
           )}
-        </button>
+        </GlassButton>
       </TooltipTrigger>
       <TooltipContent>{voice.supported ? t("chat.voice") : t("chat.voiceUnsupported")}</TooltipContent>
     </Tooltip>
   );
+
+  const trailingActions = <SkillPicker value={skillMode} onChange={setSkillMode} />;
 
   const modelLeading = model?.capabilities.includes("reasoning") ? (
     <IntelligencePicker
@@ -142,6 +170,23 @@ export function ThreadComposer() {
       onChange={(value) => updateParams({ reasoningEffort: value })}
     />
   ) : null;
+
+  if (!signedIn) {
+    return (
+      <div className="relative z-10 mx-auto max-w-[920px] px-3 pb-3 pt-1 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-[var(--border)] bg-[var(--surface-glass)] px-4 py-3 shadow-sm backdrop-blur-xl">
+          <div className="flex items-center gap-2.5 text-[12.5px]">
+            <Lock className="size-4 shrink-0 text-[var(--primary)]" />
+            <span className="text-[var(--muted-foreground)]">{t("auth.signInToUnlockDesc")}</span>
+          </div>
+          <Button size="sm" onClick={() => setAuthGateOpen(true)}>
+            <Coins className="size-3.5" />
+            {t("auth.signInGetCredits")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative z-10 px-3 pb-3 pt-1 sm:px-5">
@@ -167,6 +212,7 @@ export function ThreadComposer() {
         focusSignal={focusSignal}
         hintText={t("chat.placeholderHint")}
         leadingActions={leadingActions}
+        trailingActions={trailingActions}
         modelLeading={modelLeading}
         labels={{
           form: t("chat.composerLabel"),

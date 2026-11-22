@@ -45,16 +45,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <span className="mx-auto mt-5 grid size-11 place-items-center rounded-[14px] bg-[var(--destructive-soft)] text-[var(--destructive)]">
             <AlertTriangle className="size-5" />
           </span>
-          <h1 className="mt-3 text-[17px] font-semibold text-foreground">Something broke in the interface</h1>
+          <h1 className="mt-3 text-[17px] font-semibold text-foreground">Something went wrong</h1>
           <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
-            Nothing was sent to a provider and your local data is untouched. Reload to continue — if it keeps
-            happening, export your settings first.
+            Please reload the page to continue.
           </p>
-
-          <pre className="mt-4 max-h-[160px] overflow-auto rounded-[10px] border border-[var(--border)] bg-[var(--code-bg)] p-2.5 text-start font-mono text-[10.5px] leading-relaxed text-[var(--foreground-soft)]">
-            {error.message}
-            {info?.componentStack ? `\n${info.componentStack.trim()}` : ""}
-          </pre>
 
           <div className="mt-5 flex flex-wrap justify-center gap-2">
             <Button onClick={() => window.location.reload()}>

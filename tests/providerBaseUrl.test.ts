@@ -40,6 +40,10 @@ describe("provider base URL normalisation", () => {
 
   it("keeps real sub-paths and removes duplicates or pasted endpoints", () => {
     expect(normalizeProviderBaseUrl("https://openrouter.ai/api/v1")).toBe("https://openrouter.ai/api/v1");
+    expect(normalizeProviderBaseUrl("https://openrouter.ai")).toBe("https://openrouter.ai/api/v1");
+    expect(normalizeProviderBaseUrl("https://coarena.ai")).toBe("https://coarena.ai/api/v1");
+    expect(normalizeProviderBaseUrl("https://coarena.ai/v1")).toBe("https://coarena.ai/api/v1");
+    expect(normalizeProviderBaseUrl("https://api.groq.com")).toBe("https://api.groq.com/openai/v1");
     expect(normalizeProviderBaseUrl("https://api.groq.com/openai/v1")).toBe("https://api.groq.com/openai/v1");
     expect(normalizeProviderBaseUrl("https://api.openai.com/v1/")).toBe("https://api.openai.com/v1");
     expect(normalizeProviderBaseUrl("https://api.openai.com/v1/v1")).toBe("https://api.openai.com/v1");

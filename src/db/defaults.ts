@@ -23,9 +23,26 @@ export function resetProvidersOnce(): Promise<void> {
   return inFlight;
 }
 
+const RESET_CACHE_KEY = "openharness.providersResetVersion";
+
 async function runResetOnce(): Promise<void> {
+  try {
+    if (localStorage.getItem(RESET_CACHE_KEY) === String(PROVIDERS_RESET_VERSION)) {
+      return;
+    }
+  } catch {
+    // Storage may be unavailable; fall back to IndexedDB check.
+  }
+
   const flag = await db.meta.get(PROVIDERS_RESET_FLAG);
-  if (flag?.v === PROVIDERS_RESET_VERSION) return;
+  if (flag?.v === PROVIDERS_RESET_VERSION) {
+    try {
+      localStorage.setItem(RESET_CACHE_KEY, String(PROVIDERS_RESET_VERSION));
+    } catch {
+      // ignore
+    }
+    return;
+  }
 
   await clearAllProviders();
   // The catalog cache can still list the site's server-side models; drop it so
@@ -36,4 +53,9 @@ async function runResetOnce(): Promise<void> {
     // Storage may be unavailable; nothing else depends on it.
   }
   await db.meta.put({ k: PROVIDERS_RESET_FLAG, v: PROVIDERS_RESET_VERSION });
+  try {
+    localStorage.setItem(RESET_CACHE_KEY, String(PROVIDERS_RESET_VERSION));
+  } catch {
+    // ignore
+  }
 }

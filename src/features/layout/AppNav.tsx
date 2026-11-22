@@ -5,6 +5,7 @@ import {
   LiquidNavbar,
   type LiquidNavItem,
 } from "@/components/ui/liquid-glass-navbar";
+import { CreditJellyGauge } from "@/features/layout/CreditJellyGauge";
 import { snippet, useChatSearch, type SearchHit } from "@/features/layout/useChatSearch";
 import { useT } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/tokens";
@@ -156,6 +157,8 @@ export function AppNav({ className }: { className?: string }) {
           />
         }
       />
+
+      <CreditJellyGauge hidden={searchMode} />
 
       {showPanel ? (
         <div

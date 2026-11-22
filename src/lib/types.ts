@@ -1,8 +1,13 @@
 // Shared logic types; change this helper here and update callers if its contract changes.
 export type ApiFormat = "openai" | "anthropic" | "gemini" | "custom";
+
+export type SkillId = "chat" | "web_builder" | "game_builder" | "deep_research";
+export type SkillMode = "auto" | SkillId;
 export type AuthStyle = "bearer" | "raw" | "query" | "none";
 export type Capability = "text" | "vision" | "video" | "audio" | "tools" | "reasoning";
 export type Tier = "free" | "paid" | "unknown";
+
+export type PricingClass = "free" | "paid" | "unknown";
 
 export interface AuthConfig {
   /** Header name. Empty string disables the auth header. */
@@ -83,6 +88,8 @@ export interface AIModel {
    */
   locked?: boolean;
   pricing?: ModelPricing;
+  /** Explicit pricing classification ('free' | 'paid' | 'unknown') from provider API metadata or official pricing list. */
+  pricingTier?: PricingClass;
   enabled: boolean;
   favorite: boolean;
   order: number;
@@ -150,6 +157,8 @@ export interface Chat {
   title: string;
   systemPrompt: string;
   pinned: boolean;
+  /** Enabled when the backend classifier determines this chat is building a previewable project (website, game, app, UI). */
+  previewEnabled?: boolean;
   folderId?: string;
   providerId?: string;
   modelId?: string;
@@ -176,6 +185,10 @@ export interface Message {
   attachments: string[];
   providerId?: string;
   modelId?: string;
+  /** Backend skill that handled this assistant turn. */
+  skillId?: SkillId;
+  /** Number of live web/image sources fetched by the backend skill. */
+  skillSourcesCount?: number;
   error?: { kind: ErrorKind; message: string };
   stats?: MessageStats;
   createdAt: number;
@@ -224,6 +237,7 @@ export interface StreamDelta {
   reasoning?: string;
   usage?: StreamUsage;
   finish?: string;
+  error?: string;
 }
 
 export interface Settings {

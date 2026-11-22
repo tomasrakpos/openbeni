@@ -1,5 +1,5 @@
 // chat feature: EmptyState; change its UI/flow here and keep related state/API calls in sync.
-import { ArrowRight, KeyRound, MessageCircle, ShieldCheck } from "lucide-react";
+import { ArrowRight, Coins, KeyRound, Lock, MessageCircle, ShieldCheck } from "lucide-react";
 import { motion, useReducedMotion } from "framer-motion";
 import * as React from "react";
 import { toast } from "sonner";
@@ -8,14 +8,21 @@ import PromptComposer, { type PromptComposerModel } from "@/components/ui/prompt
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { buildComposerModels, resolveComposerModelId } from "@/features/chat/modelOptions";
 import { IntelligencePicker, type ReasoningEffort } from "@/features/chat/IntelligencePicker";
+import { SkillPicker } from "@/features/chat/SkillPicker";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth";
 import { useChatsStore } from "@/stores/chats";
 import { useAllModels, useAllProviders } from "@/stores/catalog";
+import { buildCombinedRouters, isRouterSelectionId, useRoutersStore } from "@/stores/routers";
 import { useUiStore } from "@/stores/ui";
 import { useSettingsStore } from "@/stores/settings";
 import { Logo } from "@/components/Logo";
 import { PixelMascot } from "@/features/chat/PixelMascot";
+
+// Prevent React StrictMode double-mount or view switches from replaying the
+// landing hero entrance animation and making the title appear twice.
+let heroRevealed = false;
 
 export function EmptyState({ docking = false }: { docking?: boolean }) {
   const t = useT();
@@ -30,11 +37,27 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
   const createChat = useChatsStore((s) => s.createChat);
   const providers = useAllProviders();
   const models = useAllModels();
+  const publicRouters = useRoutersStore((s) => s.publicRouters);
+  const localRouters = useRoutersStore((s) => s.localRouters);
+  const combinedRouters = React.useMemo(
+    () => buildCombinedRouters(publicRouters, localRouters, providers, models),
+    [publicRouters, localRouters, providers, models],
+  );
   const setView = useUiStore((s) => s.setView);
   const openWizard = useUiStore((s) => s.openWizard);
+  const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
   const focusSignal = useUiStore((s) => s.focusComposer);
+  const skillMode = useUiStore((s) => s.skillMode);
+  const setSkillMode = useUiStore((s) => s.setSkillMode);
+  const signedIn = useAuthStore((s) => s.signedIn);
+  const authReady = useAuthStore((s) => s.ready);
   const lang = useSettingsStore((s) => s.settings.lang);
   const reduceMotion = useReducedMotion();
+  const shouldAnimateHero = React.useRef(!heroRevealed && !docking && !reduceMotion).current;
+
+  React.useEffect(() => {
+    heroRevealed = true;
+  }, []);
 
   const rootRef = React.useRef<HTMLDivElement>(null);
   const composerRef = React.useRef<HTMLDivElement>(null);
@@ -121,8 +144,8 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
   );
 
   const modelOptions = React.useMemo<PromptComposerModel[]>(
-    () => buildComposerModels(providers, models),
-    [providers, models],
+    () => buildComposerModels(providers, models, combinedRouters, lang),
+    [providers, models, combinedRouters, lang],
   );
 
   const selectedModelId = React.useMemo(() => {
@@ -130,8 +153,8 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
       const resolved = resolveComposerModelId(modelOptions, models, chat.modelId);
       if (resolved) return resolved;
     }
-    if (modelOptions.some((option) => option.id === pickedModelId)) return pickedModelId;
-    return modelOptions[0]?.id ?? "";
+    if (modelOptions.some((option) => option.id === pickedModelId && !option.disabled)) return pickedModelId;
+    return modelOptions.find((option) => !option.disabled)?.id ?? modelOptions[0]?.id ?? "";
   }, [chat, modelOptions, models, pickedModelId]);
 
   const selectedModelRow = React.useMemo(
@@ -152,6 +175,10 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
 
   const handleModelChange = (modelId: string) => {
     setPickedModelId(modelId);
+    if (isRouterSelectionId(modelId)) {
+      if (chat) void setChatModel("router", modelId);
+      return;
+    }
     const row = models.find((model) => model.id === modelId);
     if (row && chat) void setChatModel(row.providerId, row.id);
   };
@@ -179,6 +206,22 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
   };
 
   const handleSubmit = async ({ prompt, modelId }: { prompt: string; modelId: string }) => {
+    if (!useAuthStore.getState().signedIn) {
+      setAuthGateOpen(true);
+      return;
+    }
+    if (isRouterSelectionId(modelId)) {
+      const router = combinedRouters.find((r) => r.selectionId === modelId);
+      if (!router || router.activeMemberCount === 0) return;
+      const current = useChatsStore.getState().chats.find((c) => c.id === useChatsStore.getState().activeChatId);
+      if (!current) {
+        await createChat({ providerId: "router", modelId: router.selectionId });
+      } else if (current.providerId !== "router" || current.modelId !== router.selectionId) {
+        await setChatModel("router", router.selectionId);
+      }
+      await send(prompt);
+      return;
+    }
     const row = models.find((model) => model.id === modelId);
     if (!row) return;
     const current = useChatsStore.getState().chats.find((c) => c.id === useChatsStore.getState().activeChatId);
@@ -195,12 +238,12 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
     <div
       ref={rootRef}
       className={cn(
-        "relative mx-auto flex w-full max-w-[920px] flex-1 flex-col items-center justify-center px-5 pb-10 pt-[calc(var(--header-h)+24px)]",
+        "relative mx-auto flex w-full max-w-[920px] flex-1 flex-col items-center justify-center px-5 pb-10 pt-[calc(var(--header-h)+48px)]",
         docking && dockTarget && "chat-docking",
       )}
     >
       <motion.div
-        initial={docking || reduceMotion ? false : { opacity: 0, y: 10 }}
+        initial={shouldAnimateHero ? { opacity: 0, y: 10 } : false}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
         className="chat-dock-hero flex w-full flex-col items-center text-center"
@@ -219,7 +262,7 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
             <span className="text-gradient">{t("chat.emptyTitle")}</span>
           ) : (
             <>
-              What do you want to <span className="text-gradient">explore</span>?
+              What are we <span className="text-gradient">working on</span>?
             </>
           )}
         </h1>
@@ -228,7 +271,26 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
         </p>
       </motion.div>
 
-      {enabledProviders.length === 0 ? (
+      {!authReady && !signedIn ? (
+        <div className="chat-dock-hero mt-7 h-[180px] w-full max-w-[440px]" aria-hidden="true" />
+      ) : !signedIn ? (
+        <div className="chat-dock-hero mt-7 flex max-w-[440px] flex-col items-center gap-3.5 rounded-[20px] border border-[var(--border)] bg-[var(--surface-glass)] p-6 text-center shadow-sm backdrop-blur-xl">
+          <span className="grid size-12 place-items-center rounded-[15px] border border-[var(--border)] bg-[var(--surface-2)]">
+            <Lock className="size-5 text-[var(--primary)]" />
+          </span>
+          <div className="space-y-1">
+            <p className="text-[15px] font-semibold tracking-[-0.01em]">{t("auth.signInToUnlockTitle")}</p>
+            <p className="text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
+              {t("auth.signInToUnlockDesc")}
+            </p>
+          </div>
+          <Button onClick={() => setAuthGateOpen(true)} className="mt-1">
+            <Coins className="size-4" />
+            {t("auth.signInGetCredits")}
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+      ) : enabledProviders.length === 0 ? (
         <div className="chat-dock-hero mt-7 flex flex-col items-center gap-3 rounded-[18px] border border-[var(--border)] bg-[var(--surface-glass)] p-6 shadow-sm backdrop-blur-xl">
           <div className="flex -space-x-2">
             {[0, 1, 2].map((index) => (
@@ -264,7 +326,7 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
           >
             <PixelMascot />
             <motion.div
-              initial={docking || reduceMotion ? false : { opacity: 0, y: 12 }}
+              initial={shouldAnimateHero ? { opacity: 0, y: 12 } : false}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.32, delay: docking ? 0 : 0.06, ease: [0.22, 1, 0.36, 1] }}
               className="w-full"
@@ -275,6 +337,7 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
                 models={modelOptions}
                 modelId={selectedModelId}
                 onModelChange={handleModelChange}
+                trailingActions={<SkillPicker value={skillMode} onChange={setSkillMode} />}
                 modelLeading={
                   reasoningCapable ? (
                     <IntelligencePicker value={reasoningEffort} onChange={setReasoningEffort} />
@@ -301,18 +364,6 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
           </div>
         </>
       )}
-
-      <div className="chat-dock-hero mt-8 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[10.5px] text-[var(--faint)]">
-        <span className="inline-flex items-center gap-1.5">
-          <ShieldCheck className="size-3.5 text-[var(--success)]" /> {t("capture.local")}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <KeyRound className="size-3.5 text-[var(--primary)]" /> {t("capture.private")}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <Logo size={14} /> {t("capture.working")}
-        </span>
-      </div>
     </div>
   );
 }

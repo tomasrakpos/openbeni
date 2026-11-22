@@ -80,13 +80,14 @@ void main(){
 }`;
 
 const PRESENT = 2.4;
+const TIME_SCALE = 1.85;
 const LOGO_SCALE = 0.62;
 const FINAL_SCALE = 0.85;
 const START_ZOOM = 2.3;
 const GLIDE = 2.3;
 const TILE = 340;
-const HOLD_AFTER = 320;
-const FADE_MS = 620;
+const HOLD_AFTER = 120;
+const FADE_MS = 380;
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -297,7 +298,7 @@ export function GlassIntro({ ready, onFinish }: Props) {
 
       const tick = (now: number) => {
         if (stopped) return;
-        const dt = Math.min(0.1, (now - last) / 1000);
+        const dt = Math.min(0.1, (now - last) / 1000) * TIME_SCALE;
         last = now;
         if (!reduce && rt < PRESENT) rt = Math.min(PRESENT, rt + dt);
         if (textureReady) draw();
@@ -349,7 +350,7 @@ export function GlassIntro({ ready, onFinish }: Props) {
   return (
     <div
       className={cn(
-        "fixed inset-0 z-[200] overflow-hidden bg-[#05050a] transition-opacity duration-[620ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+        "fixed inset-0 z-[200] overflow-hidden bg-[#05050a] transition-opacity duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
         leaving ? "pointer-events-none opacity-0" : "opacity-100",
       )}
       onClick={() => finishRef.current()}

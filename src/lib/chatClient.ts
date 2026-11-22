@@ -411,6 +411,35 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
   clearTimeout(connectTimer);
 
   if (!response.ok) {
+    // Retry once without `stream_options` when an OpenAI-compatible gateway
+    // rejects unknown fields with HTTP 400/422.
+    if ((response.status === 400 || response.status === 422) && "stream_options" in body) {
+      const preview = await response.clone().text().catch(() => "");
+      if (/stream_options|extra_forbidden|unrecognized|unknown field|additional properties/i.test(preview)) {
+        const retryBody = { ...body };
+        delete retryBody.stream_options;
+        try {
+          await response.body?.cancel().catch(() => undefined);
+          response = await fetchWithCorsFallback(
+            url,
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify(retryBody),
+              signal: controller.signal,
+              cache: "no-store",
+            },
+            provider,
+            proxyUrl,
+          );
+        } catch {
+          // Keep original error handling below if retry fails.
+        }
+      }
+    }
+  }
+
+  if (!response.ok) {
     signal.removeEventListener("abort", onAbort);
     const payload = await readJsonSafe(response);
     throw makeHttpError(
@@ -463,6 +492,9 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
       provider.custom?.reasoningPath,
     );
     if (!delta) return;
+    if (delta.error) {
+      throw makeApiError("server", redactSecrets(delta.error));
+    }
     if (delta.text) {
       if (firstTokenMs === undefined) firstTokenMs = Math.round(performance.now() - started);
       text += delta.text;
@@ -498,6 +530,7 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
     if (isAbort(err)) {
       throw makeApiError("timeout", "The stream stalled for 90 seconds and was stopped.");
     }
+    if (err instanceof Error && "kind" in err) throw err;
     throw makeApiError(classifyException(err, false), err instanceof Error ? err.message : "Stream failed");
   } finally {
     if (idleTimer) window.clearTimeout(idleTimer);

@@ -55,31 +55,73 @@ export function isLocalProvider(provider?: Pick<Provider, "baseUrl">): boolean {
   }
 }
 
+const PAID_ONLY_HOSTS = new Set([
+  "api.openai.com",
+  "api.anthropic.com",
+  "api.deepseek.com",
+  "api.x.ai",
+  "api.perplexity.ai",
+  "api.cohere.com",
+  "api.cohere.ai",
+  "api.mistral.ai",
+  "api.together.xyz",
+  "api.fireworks.ai",
+]);
+
+const FREE_TIER_HOSTS = new Set([
+  "api.groq.com",
+  "api.cerebras.ai",
+  "models.inference.ai.azure.com",
+  "models.github.ai",
+  "api.sambanova.ai",
+  "gen.pollinations.ai",
+]);
+
+export function tierSortRank(tier: Tier): number {
+  if (tier === "free") return 0;
+  if (tier === "unknown") return 1;
+  return 2;
+}
+
 /**
  * Free/Paid source of truth, in order:
  *  1. user override
  *  2. provider metadata pricing (zero = free, above zero = paid)
- *  3. bundled curated registry
- *  4. hard evidence (":free" suffix, local provider)
- *  5. unknown — never guess
+ *  3. explicit ":free" / "-free" suffix or local provider
+ *  4. stored tier from smart live inspection ("free" | "paid")
+ *  5. provider host policy + bundled curated registry
+ *  6. unknown — never guess
  */
 export function resolveTier(args: {
   modelId: string;
   tierOverride?: Tier;
   pricing?: ModelPricing;
   provider?: Pick<Provider, "baseUrl">;
-  /** The tier stored on the model when it was added from a preset. */
+  /** The tier stored on the model when it was added from a preset or smart inspector. */
   suggestedTier?: Tier;
 }): Tier {
   if (args.tierOverride) return args.tierOverride;
   if (args.pricing) {
     return args.pricing.prompt === 0 && args.pricing.completion === 0 ? "free" : "paid";
   }
-  if (/:free$/i.test(args.modelId)) return "free";
+  if (/(?::free|\/free|-free)$/i.test(args.modelId) || args.modelId.toLowerCase().includes(":free")) return "free";
   if (isLocalProvider(args.provider)) return "free";
+  if (args.suggestedTier === "free" || args.suggestedTier === "paid") return args.suggestedTier;
+
+  let host = "";
+  if (args.provider?.baseUrl) {
+    try {
+      host = new URL(args.provider.baseUrl).hostname.toLowerCase();
+    } catch {
+      host = "";
+    }
+  }
+  if (host && FREE_TIER_HOSTS.has(host)) return "free";
+  if (host && PAID_ONLY_HOSTS.has(host)) return "paid";
+  if (host === "openrouter.ai" || host === "www.openrouter.ai") return "paid";
+
   const curated = curatedFor(args.modelId);
   if (curated?.tier) return curated.tier;
-  if (args.suggestedTier) return args.suggestedTier;
   return "unknown";
 }
 

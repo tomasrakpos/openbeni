@@ -1,5 +1,5 @@
 // Shared logic detect; change this helper here and update callers if its contract changes.
-import { classifyException, makeApiError, readJsonSafe } from "@/lib/http";
+import { classifyException, makeApiError, proxiedUrl, readJsonSafe, resolveProxyUrl } from "@/lib/http";
 import { joinUrl, normalizeBaseUrl } from "@/lib/normalize";
 import { parseModelList } from "@/lib/chatClient";
 import type { ApiFormat, DetectionResult, ProbeStep } from "@/lib/types";
@@ -54,12 +54,23 @@ async function probe(
   opts.signal?.addEventListener("abort", onAbort, { once: true });
   const started = performance.now();
   try {
-    const target = opts.useProxy && opts.proxyUrl ? `${opts.proxyUrl.trim().replace(/\/+$/, "")}?url=${encodeURIComponent(url)}` : url;
-    const response = await fetch(target, {
+    const init: RequestInit = {
       headers: { Accept: "application/json", ...opts.extraHeaders, ...headers },
       signal: controller.signal,
       cache: "no-store",
-    });
+    };
+    const proxy = resolveProxyUrl(opts.proxyUrl);
+    let response: Response;
+    if (opts.useProxy) {
+      response = await fetch(proxiedUrl(url, proxy), init);
+    } else {
+      try {
+        response = await fetch(url, init);
+      } catch (err) {
+        if (controller.signal.aborted || classifyException(err, false) !== "cors") throw err;
+        response = await fetch(proxiedUrl(url, proxy), init);
+      }
+    }
     step.status = response.status;
     const payload = await readJsonSafe(response);
     if (response.ok) {

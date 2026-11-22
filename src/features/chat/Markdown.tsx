@@ -1,5 +1,6 @@
 // chat feature: Markdown; change its UI/flow here and keep related state/API calls in sync.
 import * as React from "react";
+import "katex/dist/katex.min.css";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";

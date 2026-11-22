@@ -1,5 +1,6 @@
 // layout feature: CornerMenu; change its UI/flow here and keep related state/API calls in sync.
-import { Menu } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { ChevronDown, Menu } from "lucide-react";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +36,8 @@ export interface CornerMenuItem {
   menuItems?: CornerMenuItem[];
   /** Accessible label for the trailing menu trigger. */
   menuLabel?: string;
+  /** Optional inline expandable submenu panel rendered below this item. */
+  submenu?: React.ReactNode;
 }
 
 export interface CornerMenuSection {
@@ -55,6 +58,8 @@ export interface CornerMenuProps {
   icon?: IconComponent;
   /** Optional brand row pinned above the items, e.g. the site logo. */
   header?: React.ReactNode;
+  /** Optional pinned footer below the scrollable items (e.g. AccountCard). */
+  footer?: React.ReactNode | ((close: () => void) => React.ReactNode);
   /** Control the open animation from another trigger while keeping this menu's anchor. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -126,7 +131,8 @@ function closeOtherCornerMenus(selfId: string) {
 
 
 const CSS = `
-.cm-scrim{position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:35}
+.cm-scrim{position:fixed;inset:0;background:transparent;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);opacity:0;visibility:hidden;pointer-events:none;z-index:35;will-change:opacity;transition:opacity 280ms cubic-bezier(.22,1,.36,1),visibility 0s linear 280ms}
+.cm-scrim[data-open="true"]{opacity:1;visibility:visible;transition:opacity 280ms cubic-bezier(.22,1,.36,1),visibility 0s linear 0s}
 .cm-root{position:relative;width:44px;height:44px;z-index:40;flex:none}
 .cm-root-proxy{position:absolute}
 .cm-trigger{position:absolute;inset:0;display:grid;place-items:center;padding:0;border-radius:9999px;cursor:pointer;
@@ -139,34 +145,63 @@ const CSS = `
 .cm-trigger:focus-visible{outline:2px solid var(--ring,var(--primary));outline-offset:2px}
 .cm-trigger-proxy{opacity:0!important;pointer-events:none!important}
 .cm-icon{display:grid;place-items:center;will-change:transform,opacity,filter}
-.cm-card{position:absolute;left:0;top:0;width:0;height:0;opacity:0;overflow:hidden;pointer-events:none;will-change:width,height,border-radius,left,top}
-.cm-cont{position:absolute;padding:14px 10px 12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;
-  transform-origin:center center;will-change:transform,opacity,filter;color:var(--foreground);font:inherit}
+.cm-card{position:absolute;left:0;top:0;width:0;height:0;opacity:0;visibility:hidden;overflow:hidden;pointer-events:none;contain:layout style;will-change:transform,width,height,border-radius,opacity}
+.cm-cont{position:absolute;left:0;top:0;padding:14px 10px 12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;
+  contain:layout style paint;transform-origin:center center;will-change:transform,opacity,filter;color:var(--foreground);font:inherit}
 .cm-cont::-webkit-scrollbar{display:none}
+.cm-cont-footer{display:flex;flex-direction:column;overflow:visible}
+.cm-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
+.cm-scroll::-webkit-scrollbar{display:none}
+.cm-footer{flex:none;position:relative;z-index:20;padding-top:10px;margin-top:6px;border-top:1px solid var(--border)}
 .cm-brand{display:flex;align-items:center;gap:10px;padding:2px 10px 11px;margin-bottom:4px;border-bottom:1px solid var(--border)}
 .cm-brand-name{font-size:13px;font-weight:600;letter-spacing:-.01em;color:var(--foreground);white-space:nowrap}
 .cm-brand-sub{display:block;font-size:10px;font-weight:400;color:var(--faint);white-space:nowrap}
 .cm-sec{padding:0 10px;margin:14px 0 6px;color:var(--faint);font-size:10.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase}
 .cm-sec:first-child{margin-top:2px}
-.cm-row{display:flex;align-items:center;gap:4px;width:100%}
+.cm-row-group{margin-bottom:6px;border-radius:12px;border:1px solid color-mix(in oklab,var(--foreground) 10%,transparent);
+  background:color-mix(in oklab,var(--foreground) 6.5%,transparent);
+  transition:background .16s ease,border-color .16s ease}
+.cm-row-group:last-child{margin-bottom:0}
+.cm-row-group:hover{background:color-mix(in oklab,var(--foreground) 9.5%,transparent);border-color:color-mix(in oklab,var(--foreground) 15%,transparent)}
+.cm-row-group[data-active="true"],.cm-row-group[data-actions-open="true"]{
+  background:color-mix(in oklab,var(--foreground) 12%,transparent);
+  border-color:color-mix(in oklab,var(--foreground) 19%,transparent)}
+.cm-row{display:flex;align-items:center;gap:2px;width:100%}
 .cm-item{display:flex;align-items:center;gap:12px;flex:1;min-width:0;height:40px;padding:0 10px;border:0;border-radius:10px;
   background:none;cursor:pointer;text-align:left;color:inherit;font:inherit;text-decoration:none;transition:background .15s}
 .cm-item:hover{background:color-mix(in oklab,var(--foreground) 7%,transparent)}
 .cm-item[aria-current="true"]{background:color-mix(in oklab,var(--foreground) 10%,transparent)}
+.cm-row-group .cm-item,.cm-row-group .cm-item:hover,.cm-row-group .cm-item[aria-current="true"]{background:none}
 .cm-item:focus-visible{outline:2px solid var(--ring,var(--primary));outline-offset:-2px}
 .cm-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cm-more{display:grid;place-items:center;width:30px;height:30px;flex:none;border:0;border-radius:8px;background:none;color:var(--faint);cursor:pointer;opacity:0;transition:background .15s,opacity .15s,color .15s}
-.cm-row:hover .cm-more,.cm-row:focus-within .cm-more,.cm-more[aria-expanded="true"]{opacity:1}
-.cm-more:hover,.cm-more[aria-expanded="true"]{background:color-mix(in oklab,var(--foreground) 10%,transparent);color:var(--foreground)}
+.cm-more{display:grid;place-items:center;width:30px;height:30px;margin-right:5px;flex:none;border:0;border-radius:8px;background:none;
+  color:var(--muted-foreground);cursor:pointer;opacity:.68;transition:background .15s ease,opacity .15s ease,color .15s ease}
+.cm-row-group:hover .cm-more,.cm-more:hover,.cm-more[aria-expanded="true"]{opacity:1}
+.cm-more:hover{background:color-mix(in oklab,var(--foreground) 10%,transparent);color:var(--foreground)}
+.cm-more[aria-expanded="true"]{background:color-mix(in oklab,var(--foreground) 14%,transparent);color:var(--foreground)}
 .cm-more:focus-visible{outline:2px solid var(--ring,var(--primary));outline-offset:-1px;opacity:1}
-.cm-more svg{width:16px;height:16px}
-.cm-pop{position:absolute;right:6px;top:calc(100% - 2px);z-index:5;min-width:168px;padding:6px;border-radius:12px;border:1px solid var(--border);background:var(--surface-1);box-shadow:0 18px 36px -16px rgba(0,0,0,.45)}
-.cm-pop-item{display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:0 8px;border:0;border-radius:8px;background:none;cursor:pointer;text-align:left;color:inherit;font:inherit}
-.cm-pop-item:hover{background:color-mix(in oklab,var(--foreground) 8%,transparent)}
-.cm-pop-item:focus-visible{outline:2px solid var(--ring,var(--primary));outline-offset:-2px}
-.cm-pop-item svg{width:15px;height:15px;color:var(--muted-foreground)}
+.cm-more svg{width:15px;height:15px;transition:transform .22s cubic-bezier(.16,1,.3,1)}
+.cm-more[aria-expanded="true"] svg{transform:rotate(90deg)}
+.cm-actions-tray{display:flex;align-items:center;gap:4px;margin:0 6px 6px;padding:4px;border-radius:9px;
+  border:1px solid color-mix(in oklab,var(--foreground) 10%,transparent);
+  background:color-mix(in oklab,var(--surface-1) 76%,transparent);
+  box-shadow:inset 0 1px 0 color-mix(in oklab,var(--foreground) 6%,transparent)}
+.cm-action-btn{display:flex;align-items:center;justify-content:center;gap:5px;flex:1;min-width:0;height:30px;padding:0 7px;border:0;border-radius:7px;
+  background:none;cursor:pointer;color:var(--foreground);font:inherit;font-size:11.5px;white-space:nowrap;
+  transition:background .14s ease,color .14s ease}
+.cm-action-btn:hover{background:color-mix(in oklab,var(--foreground) 9%,transparent)}
+.cm-action-btn:active{transform:scale(.97)}
+.cm-action-btn[data-danger="true"]{color:var(--destructive)}
+.cm-action-btn[data-danger="true"]:hover{background:var(--destructive-soft)}
+.cm-action-btn[data-danger="true"] svg{color:var(--destructive)}
+.cm-action-btn:focus-visible{outline:2px solid var(--ring,var(--primary));outline-offset:-1px}
+.cm-action-btn svg{width:13px;height:13px;flex:none;color:var(--muted-foreground)}
+.cm-action-btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cm-chip{width:28px;height:28px;border-radius:9px;display:grid;place-items:center;flex:none;transition:background .2s,box-shadow .2s}
 .cm-chip svg{width:18px;height:18px;fill:none;stroke:var(--muted-foreground);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transition:stroke .2s}
+.cm-chev{width:15px;height:15px;flex:none;color:var(--faint);transition:transform .2s ease}
+.cm-item[aria-expanded="true"] .cm-chev{transform:rotate(180deg)}
+.cm-subpanel{margin:2px 6px 6px;padding:6px 8px 8px;border-radius:12px;background:color-mix(in oklab,var(--foreground) 4%,transparent);border:1px solid var(--border)}
 .cm-item:hover .cm-chip,.cm-item:focus-visible .cm-chip,.cm-item:active .cm-chip{
   background:linear-gradient(145deg,hsl(var(--cm-h) 90% 64%),hsl(var(--cm-h) 80% 42%));
   box-shadow:0 0 14px hsl(var(--cm-h) 90% 55% / .5),inset 0 1px 0 rgba(255,255,255,.4)}
@@ -176,18 +211,35 @@ const CSS = `
 }
 `;
 
-export function CornerMenu({
+let stylesInjected = false;
+function ensureCornerMenuStyles() {
+  if (stylesInjected || typeof document === "undefined") return;
+  const existing = document.getElementById("cm-styles");
+  if (existing) {
+    existing.textContent = CSS;
+  } else {
+    const tag = document.createElement("style");
+    tag.id = "cm-styles";
+    tag.textContent = CSS;
+    document.head.appendChild(tag);
+  }
+  stylesInjected = true;
+}
+
+export const CornerMenu = React.memo(function CornerMenu({
   sections,
   label,
   className,
   anchor = "left",
   icon: TriggerIcon = Menu,
   header,
+  footer,
   open,
   onOpenChange,
   hideTrigger = false,
 }: CornerMenuProps) {
   const [expanded, setExpanded] = React.useState(false);
+  const reducedMotion = useReducedMotion();
   const menuId = React.useId();
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   const cardRef = React.useRef<HTMLDivElement | null>(null);
@@ -197,8 +249,6 @@ export function CornerMenu({
   const scrimRef = React.useRef<HTMLDivElement | null>(null);
   const stateRef = React.useRef<"closed" | "opening" | "open" | "closing">("closed");
   const animRef = React.useRef<{ kind: "open" | "close"; t0: number } | null>(null);
-  const queuedRef = React.useRef(false);
-  const closeQueuedRef = React.useRef(false);
   const rafRef = React.useRef(0);
   const sizeRef = React.useRef({ width: 300, height: 600 });
   const openPropRef = React.useRef(open);
@@ -207,6 +257,11 @@ export function CornerMenu({
   onOpenChangeRef.current = onOpenChange;
   const anchorRef = React.useRef(anchor);
   anchorRef.current = anchor;
+  const hideTriggerRef = React.useRef(hideTrigger);
+  hideTriggerRef.current = hideTrigger;
+  const hasFooterRef = React.useRef(Boolean(footer));
+  hasFooterRef.current = Boolean(footer);
+  const resetSubmenusRef = React.useRef<() => void>(() => undefined);
   const apiRef = React.useRef<{
     toggle: () => void;
     open: () => void;
@@ -219,6 +274,10 @@ export function CornerMenu({
     syncOpen: () => undefined,
   });
 
+  React.useLayoutEffect(() => {
+    ensureCornerMenuStyles();
+  }, []);
+
   React.useEffect(() => {
     const root = rootRef.current;
     const card = cardRef.current;
@@ -228,11 +287,21 @@ export function CornerMenu({
     const scrim = scrimRef.current;
     if (!root || !card || !cont || !trigger || !icon || !scrim) return;
 
-    const setOpen = (open: boolean) => {
-      setExpanded(open);
-      card.style.pointerEvents = open ? "auto" : "none";
-      scrim.style.pointerEvents = open ? "auto" : "none";
-      card.inert = !open;
+    // Cache last trigger/icon values so unchanged frames skip expensive
+    // style recalculations on the backdrop-filtered trigger button.
+    let lastBgPct = -1;
+    let lastBorderPct = -1;
+    let lastIconBlur = -1;
+    let lastContBlur = -1;
+    let lastHl = -1;
+
+    const setOpen = (isOpen: boolean) => {
+      setExpanded(isOpen);
+      card.style.pointerEvents = isOpen ? "auto" : "none";
+      scrim.style.pointerEvents = isOpen ? "auto" : "none";
+      if (isOpen) scrim.dataset.open = "true";
+      else delete scrim.dataset.open;
+      card.inert = !isOpen;
     };
 
     // The card grows downward from this trigger, so the content box is capped
@@ -265,27 +334,47 @@ export function CornerMenu({
       // edge the same motion is mirrored so the card keeps its trigger edge
       // anchored while it unfolds.
       const drift = -(R - 836) * k * 0.3;
-      card.style.left =
-        anchorRef.current === "right"
-          ? `${TRIGGER_SIZE - (drift + w)}px`
-          : `${drift}px`;
-      card.style.top = `${(T - 45) * ky * 0.5}px`;
-      card.style.width = `${w}px`;
-      card.style.height = `${h}px`;
-      card.style.borderRadius = `${b}px ${a}px ${a}px ${a}px`;
+      const cardX = anchorRef.current === "right" ? TRIGGER_SIZE - (drift + w) : drift;
+      const cardY = (T - 45) * ky * 0.5;
+      card.style.visibility = co > 0.005 ? "visible" : "hidden";
+      card.style.transform = `translate3d(${cardX.toFixed(2)}px, ${cardY.toFixed(2)}px, 0)`;
+      card.style.width = `${w.toFixed(2)}px`;
+      card.style.height = `${h.toFixed(2)}px`;
+      card.style.borderRadius = `${b.toFixed(2)}px ${a.toFixed(2)}px ${a.toFixed(2)}px ${a.toFixed(2)}px`;
       card.style.opacity = String(co);
-      card.style.setProperty("--hl", String(Math.min(1, v[9]) * co));
-      scrim.style.opacity = String(0.45 * co);
-      cont.style.left = `${w / 2 - FW / 2}px`;
-      cont.style.top = `${h / 2 - FH / 2}px`;
-      cont.style.transform = `scale(${s})`;
-      cont.style.filter = v[8] > 0.05 ? `blur(${v[8] * 0.5}px)` : "none";
+      const hl = Math.round(Math.min(1, v[9]) * co * 20) / 20;
+      if (hl !== lastHl) {
+        lastHl = hl;
+        card.style.setProperty("--hl", String(hl));
+      }
+
+      const contX = w / 2 - FW / 2;
+      const contY = h / 2 - FH / 2;
+      cont.style.transform = `translate3d(${contX.toFixed(2)}px, ${contY.toFixed(2)}px, 0) scale(${s})`;
+      const contBlur = v[8] > 0.05 ? Math.round(v[8] * 5) / 10 : 0;
+      if (contBlur !== lastContBlur) {
+        lastContBlur = contBlur;
+        cont.style.filter = contBlur > 0 ? `blur(${contBlur}px)` : "none";
+      }
       cont.style.opacity = String(Math.max(0, Math.min(1, (s - 0.3) * 2)));
-      trigger.style.background = `color-mix(in oklab, var(--surface-1) ${Math.round(72 * v[12])}%, transparent)`;
-      trigger.style.borderColor = `color-mix(in oklab, var(--border-strong, var(--border)) ${Math.round(100 * v[12])}%, transparent)`;
+
+      const bgPct = Math.round(72 * v[12]);
+      if (bgPct !== lastBgPct) {
+        lastBgPct = bgPct;
+        trigger.style.background = `color-mix(in oklab, var(--surface-1) ${bgPct}%, transparent)`;
+      }
+      const borderPct = Math.round(100 * v[12]);
+      if (borderPct !== lastBorderPct) {
+        lastBorderPct = borderPct;
+        trigger.style.borderColor = `color-mix(in oklab, var(--border-strong, var(--border)) ${borderPct}%, transparent)`;
+      }
       icon.style.opacity = String(v[13]);
-      icon.style.filter = `blur(${v[14] * 0.5}px)`;
-      icon.style.transform = `translate(${v[15] * 0.5}px, ${-v[16] * 0.5}px) scale(${v[17]})`;
+      const iconBlur = v[14] > 0.05 ? Math.round(v[14] * 5) / 10 : 0;
+      if (iconBlur !== lastIconBlur) {
+        lastIconBlur = iconBlur;
+        icon.style.filter = iconBlur > 0 ? `blur(${iconBlur}px)` : "none";
+      }
+      icon.style.transform = `translate3d(${(v[15] * 0.5).toFixed(2)}px, ${(-v[16] * 0.5).toFixed(2)}px, 0) scale(${v[17]})`;
     };
 
     const focusFirstItem = () => {
@@ -303,19 +392,13 @@ export function CornerMenu({
         applyM(k[k.length - 1]);
         const isOpen = anim.kind === "open";
         stateRef.current = isOpen ? "open" : "closed";
+        const allowOverflow = isOpen && hasFooterRef.current;
+        card.style.overflow = allowOverflow ? "visible" : "hidden";
+        card.style.contain = allowOverflow ? "style" : "layout style";
         setOpen(isOpen);
         animRef.current = null;
-        if (isOpen && closeQueuedRef.current) {
-          closeQueuedRef.current = false;
-          start("close");
-          return;
-        }
         if (isOpen) focusFirstItem();
-        else trigger.focus({ preventScroll: true });
-        if (queuedRef.current) {
-          queuedRef.current = false;
-          toggle();
-        }
+        else if (!hideTriggerRef.current) trigger.focus({ preventScroll: true });
       } else {
         applyM(sample(k, f));
         rafRef.current = requestAnimationFrame(tick);
@@ -323,53 +406,80 @@ export function CornerMenu({
     };
 
     const start = (kind: "open" | "close") => {
-      if (kind === "open") measure();
+      const now = performance.now();
+      let startProgress = 0;
+      // Smoothly reverse mid-flight when user clicks rapidly during open/close.
+      if (animRef.current && animRef.current.kind !== kind) {
+        const prevK = animRef.current.kind === "open" ? OPEN : CLOSE;
+        const prevSpan = (prevK[prevK.length - 1][0] - prevK[0][0]) * FRAME_MS;
+        const elapsed = Math.max(0, Math.min(prevSpan, now - animRef.current.t0));
+        const prevProgress = prevSpan > 0 ? elapsed / prevSpan : 1;
+        startProgress = Math.max(0, Math.min(0.95, 1 - prevProgress));
+      }
+
+      if (kind === "open") {
+        measure();
+      } else {
+        // Synchronously clear nested menus and blur inside content so nothing
+        // can ever stay stuck open or focused after rapid open/close.
+        resetSubmenusRef.current();
+        if (document.activeElement instanceof HTMLElement && cont.contains(document.activeElement)) {
+          document.activeElement.blur();
+        }
+      }
+
       if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        if (rafRef.current) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = 0;
+        }
+        animRef.current = null;
         const k = kind === "open" ? OPEN : CLOSE;
         applyM(k[k.length - 1]);
-        stateRef.current = kind === "open" ? "open" : "closed";
-        setOpen(kind === "open");
-        if (kind === "open") focusFirstItem();
+        const isOpen = kind === "open";
+        stateRef.current = isOpen ? "open" : "closed";
+        const allowOverflow = isOpen && hasFooterRef.current;
+        card.style.overflow = allowOverflow ? "visible" : "hidden";
+        card.style.contain = allowOverflow ? "style" : "layout style";
+        setOpen(isOpen);
+        if (isOpen) focusFirstItem();
         return;
       }
-      animRef.current = { kind, t0: performance.now() };
+
+      card.style.overflow = "hidden";
+      card.style.contain = "layout style";
+      const nextK = kind === "open" ? OPEN : CLOSE;
+      const nextSpan = (nextK[nextK.length - 1][0] - nextK[0][0]) * FRAME_MS;
+      animRef.current = { kind, t0: now - startProgress * nextSpan };
       stateRef.current = kind === "open" ? "opening" : "closing";
-      if (kind === "open") setOpen(true);
-      else {
-        card.style.pointerEvents = "none";
-        scrim.style.pointerEvents = "none";
+      if (kind === "open") {
+        card.style.visibility = "visible";
+        setOpen(true);
+      } else {
+        setOpen(false);
       }
       if (!rafRef.current) rafRef.current = requestAnimationFrame(tick);
     };
 
     const show = () => {
-      if (animRef.current) {
-        queuedRef.current = true;
-        return;
-      }
-      if (stateRef.current === "closed") {
-        closeQueuedRef.current = false;
-        closeOtherCornerMenus(menuId);
-        start("open");
-      }
+      if (stateRef.current === "open" || stateRef.current === "opening") return;
+      closeOtherCornerMenus(menuId);
+      start("open");
     };
 
     const hide = () => {
-      if (animRef.current) {
-        if (animRef.current.kind === "open") closeQueuedRef.current = true;
-        return;
-      }
-      if (stateRef.current === "open" || stateRef.current === "opening") start("close");
+      if (stateRef.current === "closed" || stateRef.current === "closing") return;
+      start("close");
     };
 
     const toggle = () => {
+      const currentlyOpen = stateRef.current === "open" || stateRef.current === "opening";
       if (openPropRef.current !== undefined) {
-        onOpenChangeRef.current?.(stateRef.current !== "open" && stateRef.current !== "opening");
+        onOpenChangeRef.current?.(!currentlyOpen);
         return;
       }
-      if (stateRef.current === "closed") show();
-      else if (stateRef.current === "open") hide();
-      else queuedRef.current = true;
+      if (currentlyOpen) hide();
+      else show();
     };
 
     const close = () => {
@@ -391,14 +501,14 @@ export function CornerMenu({
     };
 
     const onResize = () => {
-      if (stateRef.current !== "closed") {
+      if (stateRef.current === "open" || stateRef.current === "opening") {
         measure();
-        applyM(OPEN[OPEN.length - 1]);
+        if (stateRef.current === "open") applyM(OPEN[OPEN.length - 1]);
       }
     };
 
     const onScrim = () => {
-      if (stateRef.current === "open") close();
+      if (stateRef.current === "open" || stateRef.current === "opening") close();
     };
 
     measure();
@@ -425,9 +535,17 @@ export function CornerMenu({
   }, [open]);
 
   const [openActionId, setOpenActionId] = React.useState<string | null>(null);
+  const [openSubmenuId, setOpenSubmenuId] = React.useState<string | null>(null);
+  resetSubmenusRef.current = () => {
+    setOpenActionId(null);
+    setOpenSubmenuId(null);
+  };
 
   React.useEffect(() => {
-    if (!expanded) setOpenActionId(null);
+    if (!expanded) {
+      setOpenActionId(null);
+      setOpenSubmenuId(null);
+    }
   }, [expanded]);
 
   const activate = (item: CornerMenuItem) => {
@@ -442,9 +560,175 @@ export function CornerMenu({
     item.onClick?.();
   };
 
+  const renderedSections = sections.map((section) => (
+    <div key={section.id} role="group" aria-label={section.title ?? section.id}>
+      {section.title ? <div className="cm-sec">{section.title}</div> : null}
+      {section.items.map((item) => {
+        const Icon = item.icon;
+        const content = (
+          <>
+            <span className="cm-chip" style={{ "--cm-h": item.hue ?? 262 } as React.CSSProperties}>
+              {Icon ? <Icon strokeWidth={1.6} /> : null}
+            </span>
+            <span className="cm-label" dir="auto" style={{ textAlign: "left" }}>
+              {item.label}
+            </span>
+          </>
+        );
+
+        if (item.menuItems?.length) {
+          const isTrayOpen = openActionId === item.id;
+          return (
+            <div
+              key={item.id}
+              className="cm-row-group"
+              data-active={item.active ? "true" : undefined}
+              data-actions-open={isTrayOpen ? "true" : undefined}
+            >
+              <div className="cm-row">
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-corner-item=""
+                  aria-current={item.active ? "true" : undefined}
+                  className="cm-item"
+                  onClick={() => activate(item)}
+                >
+                  {content}
+                </button>
+                <button
+                  type="button"
+                  className="cm-more"
+                  aria-label={item.menuLabel ?? "More"}
+                  aria-expanded={isTrayOpen}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setOpenActionId(isTrayOpen ? null : item.id);
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <circle cx="5" cy="12" r="1.9" />
+                    <circle cx="12" cy="12" r="1.9" />
+                    <circle cx="19" cy="12" r="1.9" />
+                  </svg>
+                </button>
+              </div>
+              <AnimatePresence initial={false}>
+                {isTrayOpen ? (
+                  <motion.div
+                    key={`${item.id}-actions`}
+                    role="group"
+                    aria-label={item.menuLabel ?? "More"}
+                    initial={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -4 }}
+                    animate={reducedMotion ? { opacity: 1 } : { height: "auto", opacity: 1, y: 0 }}
+                    exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -4 }}
+                    transition={
+                      reducedMotion
+                        ? { duration: 0.1 }
+                        : { duration: 0.22, ease: [0.16, 1, 0.3, 1] }
+                    }
+                    style={{ overflow: "hidden" }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="cm-actions-tray">
+                      {item.menuItems.map((action) => {
+                        const AIcon = action.icon;
+                        return (
+                          <button
+                            key={action.id}
+                            type="button"
+                            role="menuitem"
+                            data-danger={action.hue === 0 ? "true" : undefined}
+                            className="cm-action-btn"
+                            title={action.label}
+                            onClick={() => runItemAction(action)}
+                          >
+                            {AIcon ? <AIcon strokeWidth={1.7} /> : null}
+                            <span dir="auto">{action.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          );
+        }
+
+        if (item.submenu) {
+          const subOpen = openSubmenuId === item.id;
+          return (
+            <div key={item.id}>
+              <button
+                type="button"
+                role="menuitem"
+                data-corner-item=""
+                aria-expanded={subOpen}
+                className="cm-item"
+                onClick={() => setOpenSubmenuId((cur) => (cur === item.id ? null : item.id))}
+              >
+                {content}
+                <ChevronDown className="cm-chev" aria-hidden="true" />
+              </button>
+              <AnimatePresence initial={false}>
+                {subOpen ? (
+                  <motion.div
+                    key={`${item.id}-sub`}
+                    initial={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -4 }}
+                    animate={reducedMotion ? { opacity: 1 } : { height: "auto", opacity: 1, y: 0 }}
+                    exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0, y: -4 }}
+                    transition={
+                      reducedMotion
+                        ? { duration: 0.1 }
+                        : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }
+                    }
+                    style={{ overflow: "hidden" }}
+                  >
+                    <div className="cm-subpanel">{item.submenu}</div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          );
+        }
+
+        if (item.href) {
+          return (
+            <a
+              key={item.id}
+              href={item.href}
+              role="menuitem"
+              data-corner-item=""
+              aria-current={item.active ? "true" : undefined}
+              className="cm-item"
+              onClick={() => apiRef.current.close()}
+            >
+              {content}
+            </a>
+          );
+        }
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="menuitem"
+            data-corner-item=""
+            aria-current={item.active ? "true" : undefined}
+            className="cm-item"
+            onClick={() => activate(item)}
+          >
+            {content}
+          </button>
+        );
+      })}
+    </div>
+  ));
+
+  const renderedFooter = typeof footer === "function" ? footer(() => apiRef.current.close()) : footer;
+
   return (
     <>
-      <style>{CSS}</style>
       <div ref={scrimRef} className="cm-scrim" aria-hidden="true" />
       <div ref={rootRef} className={cn("cm-root", hideTrigger && "cm-root-proxy", className)} dir="ltr">
         <button
@@ -470,112 +754,26 @@ export function CornerMenu({
           aria-label={label ?? "Menu"}
           className="cm-card cm-surface"
         >
-          <div ref={contRef} className="cm-cont" dir="ltr">
+          <div
+            ref={contRef}
+            className={cn("cm-cont", footer && "cm-cont-footer")}
+            dir="ltr"
+            onClick={() => {
+              if (openActionId) setOpenActionId(null);
+            }}
+          >
             {header ? <div className="cm-brand">{header}</div> : null}
-            {sections.map((section) => (
-              <div key={section.id} role="group" aria-label={section.title ?? section.id}>
-                {section.title ? <div className="cm-sec">{section.title}</div> : null}
-                {section.items.map((item) => {
-                  const Icon = item.icon;
-                  const content = (
-                    <>
-                      <span className="cm-chip" style={{ "--cm-h": item.hue ?? 262 } as React.CSSProperties}>
-                        {Icon ? <Icon strokeWidth={1.6} /> : null}
-                      </span>
-                      <span className="cm-label" dir="auto" style={{ textAlign: "left" }}>
-                        {item.label}
-                      </span>
-                    </>
-                  );
-
-                  if (item.menuItems?.length) {
-                    const open = openActionId === item.id;
-                    return (
-                      <div key={item.id} className="cm-row" style={{ position: "relative" }}>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          data-corner-item=""
-                          aria-current={item.active ? "true" : undefined}
-                          className="cm-item"
-                          onClick={() => activate(item)}
-                        >
-                          {content}
-                        </button>
-                        <button
-                          type="button"
-                          className="cm-more"
-                          aria-label={item.menuLabel ?? "More"}
-                          aria-haspopup="menu"
-                          aria-expanded={open}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenActionId(open ? null : item.id);
-                          }}
-                        >
-                          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                            <circle cx="5" cy="12" r="1.8" />
-                            <circle cx="12" cy="12" r="1.8" />
-                            <circle cx="19" cy="12" r="1.8" />
-                          </svg>
-                        </button>
-                        {open ? (
-                          <div className="cm-pop" role="menu" aria-label={item.menuLabel ?? "More"}>
-                            {item.menuItems.map((action) => {
-                              const AIcon = action.icon;
-                              return (
-                                <button
-                                  key={action.id}
-                                  type="button"
-                                  role="menuitem"
-                                  className="cm-pop-item"
-                                  onClick={() => runItemAction(action)}
-                                >
-                                  {AIcon ? <AIcon strokeWidth={1.6} /> : null}
-                                  <span dir="auto" style={{ textAlign: "left" }}>{action.label}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  }
-
-                  if (item.href) {
-                    return (
-                      <a
-                        key={item.id}
-                        href={item.href}
-                        role="menuitem"
-                        data-corner-item=""
-                        aria-current={item.active ? "true" : undefined}
-                        className="cm-item"
-                        onClick={() => apiRef.current.close()}
-                      >
-                        {content}
-                      </a>
-                    );
-                  }
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      role="menuitem"
-                      data-corner-item=""
-                      aria-current={item.active ? "true" : undefined}
-                      className="cm-item"
-                      onClick={() => activate(item)}
-                    >
-                      {content}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
+            {footer ? (
+              <>
+                <div className="cm-scroll">{renderedSections}</div>
+                <div className="cm-footer">{renderedFooter}</div>
+              </>
+            ) : (
+              renderedSections
+            )}
           </div>
         </div>
       </div>
     </>
   );
-}
+});

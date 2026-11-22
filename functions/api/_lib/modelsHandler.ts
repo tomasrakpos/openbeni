@@ -10,6 +10,7 @@ interface CatalogRow {
   context_window: number | null;
   capabilities: string[] | null;
   tier: string | null;
+  pricing?: string | null;
   upstream_verified: boolean;
   site_paid?: boolean;
   providers: { enabled: boolean } | null;
@@ -22,7 +23,10 @@ export interface PublicModel {
   capabilities: string[];
   contextWindow?: number;
   tier: "free" | "paid" | "unknown";
+  pricing: "free" | "paid" | "unknown";
   paid?: boolean;
+  billingSource: "site";
+  consumesCredits: true;
 }
 
 export async function handleModels(request: Request, env: ModelsEnv = {}): Promise<Response> {
@@ -55,31 +59,49 @@ export async function handleModels(request: Request, env: ModelsEnv = {}): Promi
   try {
     rows = await sbJson<CatalogRow[]>(
       env,
-      "catalog_models?select=id,display_name,context_window,capabilities,tier,upstream_verified,site_paid,providers!inner(enabled)&enabled=eq.true&upstream_verified=eq.true&providers.enabled=eq.true&order=display_name.asc",
+      "catalog_models?select=id,display_name,context_window,capabilities,tier,pricing,upstream_verified,site_paid,providers!inner(enabled)&enabled=eq.true&upstream_verified=eq.true&providers.enabled=eq.true&order=display_name.asc",
     );
   } catch {
-    // Older deployments may not have the `site_paid` column yet.
-    rows = await sbJson<CatalogRow[]>(
-      env,
-      "catalog_models?select=id,display_name,context_window,capabilities,tier,upstream_verified,providers!inner(enabled)&enabled=eq.true&upstream_verified=eq.true&providers.enabled=eq.true&order=display_name.asc",
-    );
+    try {
+      rows = await sbJson<CatalogRow[]>(
+        env,
+        "catalog_models?select=id,display_name,context_window,capabilities,tier,upstream_verified,site_paid,providers!inner(enabled)&enabled=eq.true&upstream_verified=eq.true&providers.enabled=eq.true&order=display_name.asc",
+      );
+    } catch {
+      rows = await sbJson<CatalogRow[]>(
+        env,
+        "catalog_models?select=id,display_name,context_window,capabilities,tier,upstream_verified,providers!inner(enabled)&enabled=eq.true&upstream_verified=eq.true&providers.enabled=eq.true&order=display_name.asc",
+      );
+    }
   }
 
-  const data: PublicModel[] = rows.map((row) => ({
-    id: row.id,
-    displayName: row.display_name,
-    providerName: "OpenHarneks",
-    capabilities: Array.isArray(row.capabilities) ? row.capabilities : ["text"],
-    ...(row.context_window ? { contextWindow: row.context_window } : {}),
-    tier: row.site_paid ? "paid" : row.tier === "free" || row.tier === "paid" ? row.tier : "unknown",
-    ...(row.site_paid ? { paid: true } : {}),
-  }));
+  const data: PublicModel[] = rows.map((row) => {
+    const resolvedPricing: "free" | "paid" | "unknown" = row.site_paid
+      ? "paid"
+      : row.pricing === "free" || row.pricing === "paid" || row.pricing === "unknown"
+        ? row.pricing
+        : row.tier === "free" || row.tier === "paid"
+          ? row.tier
+          : "unknown";
+    return {
+      id: row.id,
+      displayName: row.display_name,
+      providerName: "OpenHarneks",
+      capabilities: Array.isArray(row.capabilities) ? row.capabilities : ["text"],
+      ...(row.context_window ? { contextWindow: row.context_window } : {}),
+      tier: resolvedPricing,
+      pricing: resolvedPricing,
+      ...(row.site_paid ? { paid: true } : {}),
+      billingSource: "site",
+      consumesCredits: true,
+    };
+  });
 
   return new Response(JSON.stringify({ data, meta: { at: Date.now(), version: 1 } }), {
     status: 200,
     headers: apiHeaders(request, env, {
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=15",
+      "Cache-Control": "no-store, max-age=0",
     }),
   });
 }

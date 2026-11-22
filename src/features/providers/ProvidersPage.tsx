@@ -1,20 +1,24 @@
 // providers feature: ProvidersPage; change its UI/flow here and keep related state/API calls in sync.
-import { Activity, AlertTriangle, Cpu, Info, Plus, Search, Server, Zap } from "lucide-react";
+import { Activity, AlertTriangle, Cpu, Plus, Search, Server, Zap } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MenuFrame } from "@/components/ui/menu-frame";
 import { ProviderCard } from "@/features/providers/ProviderCard";
 import { ModelEditor } from "@/features/models/ModelEditor";
 import { isBundledProvider } from "@/lib/bundled";
 import { useT } from "@/lib/i18n";
 import { latestPing } from "@/lib/ping";
+import { loadProviderWizard } from "@/lib/preload";
 import { cn } from "@/lib/utils";
 import { useProvidersStore } from "@/stores/providers";
 import { useUiStore } from "@/stores/ui";
 import type { AIModel } from "@/lib/types";
+
+const MENU_HL = { "--hl": 1 } as React.CSSProperties;
 
 function StatCard({
   label,
@@ -36,7 +40,7 @@ function StatCard({
         ? "text-[var(--accent)] bg-[var(--accent-soft)]"
         : "text-[var(--primary)] bg-[var(--primary-soft)]";
   return (
-    <div className="surface-card flex items-center gap-3 p-3.5">
+    <MenuFrame style={MENU_HL} className="flex items-center gap-3 p-3.5">
       <span className={cn("grid size-9 shrink-0 place-items-center rounded-[11px]", colors)}>{icon}</span>
       <span className="min-w-0">
         <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--faint)]">
@@ -47,15 +51,16 @@ function StatCard({
           <span className="truncate text-[10.5px] text-[var(--muted-foreground)]">{hint}</span>
         </span>
       </span>
-    </div>
+    </MenuFrame>
   );
 }
 
 function ProviderAddButton() {
   const t = useT();
   const openWizard = useUiStore((s) => s.openWizard);
+  const warm = () => void loadProviderWizard();
   return (
-    <Button size="sm" onClick={() => openWizard()} aria-haspopup="dialog">
+    <Button size="sm" onClick={() => openWizard()} onPointerEnter={warm} onFocus={warm} aria-haspopup="dialog">
       <Plus className="size-3.5" /> {t("providers.add")}
     </Button>
   );
@@ -129,13 +134,13 @@ export function ProvidersPage() {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-[1080px] px-4 pb-16 pt-5 sm:px-6 sm:pt-7">
+      <div className="page-rise mx-auto w-full max-w-[1080px] px-4 pb-16 pt-5 sm:px-6 sm:pt-7">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="grid size-8 place-items-center rounded-[10px] border border-[var(--border)] bg-[var(--surface-1)] text-[var(--primary)] shadow-xs">
+              <MenuFrame style={MENU_HL} className="grid size-8 place-items-center !rounded-[10px] text-[var(--primary)]">
                 <Server className="size-4" />
-              </span>
+              </MenuFrame>
               <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-foreground sm:text-[26px]">
                 {t("providers.title")}
               </h1>
@@ -144,8 +149,7 @@ export function ProvidersPage() {
               </Badge>
             </div>
             <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
-              {t("providers.subtitle")}{" "}
-              <span className="text-[var(--faint)]">{t("capture.working")}.</span>
+              {t("providers.subtitle")}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -187,39 +191,39 @@ export function ProvidersPage() {
               />
             </div>
 
-            <div className="relative mt-4">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-[var(--faint)]" />
+            <MenuFrame style={MENU_HL} className="relative mt-4 !rounded-[14px]">
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--faint)]" />
               <Input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={`${t("common.search")} ${t("providers.title").toLowerCase()}, ${t("nav.models").toLowerCase()}…`}
-                className="h-9 pl-9 text-[12.5px]"
+                className="h-10 border-0 bg-transparent pl-9 text-[12.5px] shadow-none focus-visible:ring-0"
                 aria-label={t("common.search")}
               />
-            </div>
+            </MenuFrame>
           </>
         )}
 
         <div className="mt-4 space-y-3">
           {loading && sorted.length === 0
             ? [0, 1, 2].map((index) => (
-                <div key={index} className="surface-card flex animate-pulse items-center gap-3 p-4">
+                <MenuFrame key={index} style={MENU_HL} className="flex animate-pulse items-center gap-3 p-4">
                   <span className="size-[42px] rounded-[12px] bg-[var(--surface-2)]" />
                   <div className="flex-1 space-y-2">
                     <span className="block h-3 w-36 rounded bg-[var(--surface-2)]" />
                     <span className="block h-2.5 w-56 rounded bg-[var(--surface-2)]" />
                   </div>
-                </div>
+                </MenuFrame>
               ))
             : null}
 
           {!loading && sorted.length === 0 ? (
-            <div className="surface-card relative overflow-hidden">
+            <MenuFrame style={MENU_HL} className="relative overflow-hidden">
               <div className="absolute inset-0 bg-[radial-gradient(28rem_18rem_at_50%_-20%,var(--primary-soft),transparent_70%)]" />
               <div className="relative flex flex-col items-center px-6 py-14 text-center">
                 <div className="flex -space-x-2.5">
                   {["OpenAI", "Anthropic", "Google", "Groq"].map((name) => (
-                    <ProviderIcon key={name} name={name} size={38} className="ring-2 ring-[var(--surface-1)]" />
+                    <ProviderIcon key={name} name={name} size={38} water className="ring-2 ring-[var(--surface-1)]" />
                   ))}
                 </div>
                 <h2 className="mt-5 text-[17px] font-semibold text-foreground">{t("providers.empty")}</h2>
@@ -229,35 +233,23 @@ export function ProvidersPage() {
                 <div className="mt-5 flex flex-wrap justify-center gap-2">
                   <ProviderAddButton />
                 </div>
-                <p className="mt-5 max-w-[420px] text-[10.5px] leading-relaxed text-[var(--faint)]">
-                  {t("providers.apiKeyHint")}
-                </p>
               </div>
-            </div>
+            </MenuFrame>
           ) : filtered.length === 0 ? (
-            <div className="surface-card flex flex-col items-center gap-2 px-6 py-12 text-center">
+            <MenuFrame style={MENU_HL} className="flex flex-col items-center gap-2 px-6 py-12 text-center">
               <AlertTriangle className="size-5 text-[var(--warning)]" />
               <p className="text-[13px] font-medium text-foreground">{t("palette.noResults")}</p>
               <p className="text-[11.5px] text-[var(--muted-foreground)]">{query}</p>
               <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
                 {t("common.refresh")}
               </Button>
-            </div>
+            </MenuFrame>
           ) : (
             filtered.map((provider) => (
               <ProviderCard key={provider.id} provider={provider} onEditModel={editModel} />
             ))
           )}
         </div>
-
-        {sorted.length > 0 && (
-          <div className="mt-8 flex items-start gap-2 rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)]/60 px-3.5 py-3">
-            <Info className="mt-0.5 size-3.5 shrink-0 text-[var(--primary)]" />
-            <p className="text-[11px] leading-relaxed text-[var(--muted-foreground)]">
-              {t("models.tierSource")} · {t("providers.apiKeyHint")}
-            </p>
-          </div>
-        )}
       </div>
 
       <ModelEditor model={editingModel} open={editorOpen} onOpenChange={setEditorOpen} />

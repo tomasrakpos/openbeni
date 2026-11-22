@@ -12,6 +12,7 @@ import Pollinations from "@lobehub/icons/es/Pollinations/components/Mono.js";
 import Together from "@lobehub/icons/es/Together/components/Mono.js";
 import XAI from "@lobehub/icons/es/XAI/components/Mono.js";
 import { SlidersHorizontal } from "lucide-react";
+import { WaterRippleTile } from "@/components/ui/water-ripple-image";
 import { cn } from "@/lib/utils";
 
 type BrandIcon = ComponentType<{ size?: number; className?: string; style?: CSSProperties; "aria-hidden"?: boolean }>;
@@ -67,10 +68,53 @@ function initials(name: string): string {
   return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
 }
 
-function colorForKey(key: string): string {
+function hashString(key: string): number {
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-  return PALETTE[hash % PALETTE.length]!;
+  return hash;
+}
+
+function colorForKey(key: string): string {
+  return PALETTE[hashString(key) % PALETTE.length]!;
+}
+
+function hexToRgb01(hex: string): [number, number, number] {
+  const clean = hex.trim().replace(/^#/, "");
+  const full =
+    clean.length === 3
+      ? clean
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : clean;
+  if (!/^[0-9a-f]{6}$/i.test(full)) return [0.38, 0.55, 0.92];
+  return [
+    parseInt(full.slice(0, 2), 16) / 255,
+    parseInt(full.slice(2, 4), 16) / 255,
+    parseInt(full.slice(4, 6), 16) / 255,
+  ];
+}
+
+function mixRgb(
+  a: [number, number, number],
+  b: [number, number, number],
+  t: number,
+): [number, number, number] {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+function iconWaterPalette(brandHex: string) {
+  const base = hexToRgb01(brandHex);
+  // Keep very dark/monochrome brands (e.g. OpenAI/xAI/Ollama) aquatic & luminous
+  // while preserving vivid hue for colourful brands (Anthropic, Google, DeepSeek...).
+  const lum = 0.2126 * base[0] + 0.7152 * base[1] + 0.0722 * base[2];
+  const tinted: [number, number, number] =
+    lum < 0.18 ? mixRgb(base, [0.18, 0.58, 0.88], 0.55) : base;
+  return {
+    colorA: mixRgb(tinted, [0.06, 0.14, 0.24], 0.22),
+    colorB: mixRgb(tinted, [0.85, 0.96, 1.0], 0.28),
+    colorDeep: mixRgb(tinted, [0.02, 0.06, 0.12], 0.52),
+  };
 }
 
 interface ProviderIconProps {
@@ -81,6 +125,8 @@ interface ProviderIconProps {
   modelName?: string;
   modelId?: string;
   size?: number;
+  /** Apply live WebGL water-ripple fill inside the icon tile (used on Providers views). */
+  water?: boolean;
   className?: string;
 }
 
@@ -92,32 +138,71 @@ export function ProviderIcon({
   modelName,
   modelId,
   size = 38,
+  water = false,
   className,
 }: ProviderIconProps) {
   const isImage = !!icon && /^(data:|https?:|blob:)/.test(icon);
   const key = isImage ? undefined : resolveIconKey(icon, name, baseUrl, modelName, modelId);
   const Icon = key ? ICON_MAP[key] : undefined;
-  const brand = color ?? (key ? colorForKey(key) : colorForKey(`${name}${modelId ?? ""}${baseUrl ?? ""}`));
+  const seed = key ?? `${name}${modelId ?? ""}${baseUrl ?? ""}`;
+  const brand = color ?? colorForKey(seed);
+  const waterColors = water && !isImage ? iconWaterPalette(brand) : null;
+  const phaseOffset = (hashString(seed) % 9) * 950;
   const style: CSSProperties = {
     width: size,
     height: size,
     borderRadius: Math.round(size * 0.3),
-    background: `linear-gradient(145deg, color-mix(in oklab, ${brand} 24%, var(--surface-2)), color-mix(in oklab, ${brand} 8%, var(--surface-1)))`,
-    border: `1px solid color-mix(in oklab, ${brand} 24%, var(--border))`,
-    color: `color-mix(in oklab, ${brand} 68%, var(--foreground))`,
+    background: waterColors
+      ? `linear-gradient(145deg, color-mix(in oklab, ${brand} 55%, #0c1420), color-mix(in oklab, ${brand} 35%, #080d16))`
+      : `linear-gradient(145deg, color-mix(in oklab, ${brand} 24%, var(--surface-2)), color-mix(in oklab, ${brand} 8%, var(--surface-1)))`,
+    border: waterColors
+      ? `1px solid color-mix(in oklab, ${brand} 38%, rgba(255,255,255,0.28))`
+      : `1px solid color-mix(in oklab, ${brand} 24%, var(--border))`,
+    color: waterColors ? "#ffffff" : `color-mix(in oklab, ${brand} 68%, var(--foreground))`,
   };
   return (
     <span
-      className={cn("inline-flex shrink-0 items-center justify-center overflow-hidden shadow-xs", className)}
+      className={cn("relative inline-flex shrink-0 items-center justify-center overflow-hidden shadow-xs", className)}
       style={style}
       aria-hidden
     >
+      {waterColors ? (
+        <>
+          <span className="pointer-events-none absolute inset-0 z-0">
+            <WaterRippleTile
+              colorA={waterColors.colorA}
+              colorB={waterColors.colorB}
+              colorDeep={waterColors.colorDeep}
+              scale={4.8}
+              illumination={0.34}
+              surfaceDistortion={0.055}
+              waterDistortion={0.032}
+              speed={0.95}
+              phaseOffset={phaseOffset}
+            />
+          </span>
+          <span
+            className="pointer-events-none absolute inset-0 z-[1]"
+            style={{
+              background:
+                "radial-gradient(120% 130% at 28% 0%, rgba(255,255,255,0.42), rgba(255,255,255,0) 56%)",
+              boxShadow: "inset 0 1px 1px rgba(255,255,255,0.65), inset 0 -2px 5px rgba(0,0,0,0.28)",
+            }}
+          />
+        </>
+      ) : null}
       {isImage ? (
-        <img src={icon} alt="" className="size-full object-cover" />
+        <img src={icon} alt="" className="relative z-10 size-full object-cover" />
       ) : Icon ? (
-        <Icon size={Math.round(size * 0.56)} />
+        <Icon
+          size={Math.round(size * 0.56)}
+          className={waterColors ? "relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" : "relative z-10"}
+        />
       ) : (
-        <span style={{ fontSize: Math.round(size * 0.32), fontWeight: 650, letterSpacing: "0.02em" }}>
+        <span
+          className={waterColors ? "relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.45)]" : "relative z-10"}
+          style={{ fontSize: Math.round(size * 0.32), fontWeight: 650, letterSpacing: "0.02em" }}
+        >
           {initials(name)}
         </span>
       )}

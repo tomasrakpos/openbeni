@@ -229,6 +229,21 @@ export function parseCustomDelta(payload: unknown, deltaPath: string, reasoningP
   return delta;
 }
 
+function extractStreamError(payload: unknown): string | undefined {
+  const root = asRecord(payload);
+  if (!root) return undefined;
+  if (typeof root.error === "string" && root.error.trim()) return root.error.trim();
+  const errObj = asRecord(root.error);
+  if (errObj && typeof errObj.message === "string" && errObj.message.trim()) {
+    return errObj.message.trim();
+  }
+  if (root.type === "error") {
+    if (typeof root.message === "string" && root.message.trim()) return root.message.trim();
+    return "The upstream provider returned a stream error.";
+  }
+  return undefined;
+}
+
 /** Parse one complete SSE event for the given format. */
 export function parseStreamEvent(
   format: "openai" | "anthropic" | "gemini" | "custom",
@@ -244,6 +259,8 @@ export function parseStreamEvent(
   } catch {
     return null;
   }
+  const streamErr = extractStreamError(payload);
+  if (streamErr) return { error: streamErr };
   switch (format) {
     case "openai":
       return parseOpenAIDelta(payload);
