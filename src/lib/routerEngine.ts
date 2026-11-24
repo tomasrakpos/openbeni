@@ -1,5 +1,5 @@
 // Shared Free Model Router engine — pure TypeScript used by Cloudflare Pages
-// Functions, the Vite frontend, devAdminMock, and Vitest.
+// Functions, the Vite frontend, and Vitest.
 // Zero secrets, zero browser-only or Node-only APIs.
 
 export type ModelPricingClass = "free" | "paid" | "unknown";

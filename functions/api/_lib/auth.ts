@@ -1,12 +1,13 @@
 // Shared server logic auth; update API callers when changing its contract.
 import { jsonError } from "../security";
 import type { SecurityEnv } from "../security";
+import { DEFAULT_SIGNUP_CREDITS, ensureUserCredits, extractCreditPolicy } from "./credits";
 import { adminEmails, eq, sbJson, supabaseConfigured, verifyAccessToken, type SupabaseEnv } from "./supabase";
 
 export type Role = "user" | "admin";
 export type Status = "active" | "blocked";
 
-export const DEFAULT_SIGNUP_CREDITS = 5;
+export { DEFAULT_SIGNUP_CREDITS };
 
 export interface ProfileRow {
   id: string;
@@ -25,6 +26,8 @@ export interface AppSettingsRow {
   id: boolean;
   signup_open: boolean;
   default_signup_credits?: number | null;
+  min_credits_per_request?: number | null;
+  max_credits_per_request?: number | null;
   default_daily_token_limit: number | null;
   default_monthly_token_limit: number | null;
   updated_at: string;
@@ -85,9 +88,7 @@ export async function resolveAuth(request: Request, env: AuthEnv): Promise<AuthC
     let signupCredits = DEFAULT_SIGNUP_CREDITS;
     try {
       const settings = await getSettings(env);
-      if (typeof settings.default_signup_credits === "number" && settings.default_signup_credits >= 0) {
-        signupCredits = settings.default_signup_credits;
-      }
+      signupCredits = extractCreditPolicy(settings).signupCredits;
     } catch {
       // Fall back to default 5 signup credits.
     }
@@ -124,6 +125,10 @@ export async function resolveAuth(request: Request, env: AuthEnv): Promise<AuthC
       const existing = await sbJson<ProfileRow[]>(env, `profiles?id=${eq(user.id)}&limit=1`);
       profile = existing[0];
     }
+    if (profile) {
+      const ensured = await ensureUserCredits(env, profile.id, signupCredits, profile.credits);
+      profile = { ...profile, credits: ensured.balance };
+    }
   } else {
     // Touch activity at most once every two minutes so online status in /admin
     // stays crisp without adding DB latency to every token request.
@@ -145,6 +150,10 @@ export async function resolveAuth(request: Request, env: AuthEnv): Promise<AuthC
         // A failed activity touch must not block the request.
       }
     }
+    // Ensure a one-time signup grant exists in `user_credits` (idempotent on
+    // `user_id`) and read the authoritative balance.
+    const ensured = await ensureUserCredits(env, profile.id, DEFAULT_SIGNUP_CREDITS, profile.credits);
+    profile = { ...profile, credits: ensured.balance };
   }
 
   if (!profile) return null;

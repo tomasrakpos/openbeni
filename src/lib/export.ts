@@ -29,8 +29,13 @@ export async function downloadJson(data: unknown, filename: string): Promise<voi
 }
 
 export function chatToMarkdown(chat: Chat, messages: Message[], modelLabel?: string): string {
+  const friendlyFromMessages = messages.find((m) => m.modelDisplayName)?.modelDisplayName;
+  const resolvedModel =
+    modelLabel ||
+    (chat.modelId?.startsWith("router::") ? (friendlyFromMessages || "OpenHarneks") : chat.modelId) ||
+    "—";
   const lines: string[] = [`# ${chat.title}`, ""];
-  lines.push(`- Model: ${modelLabel || chat.modelId || "—"}`);
+  lines.push(`- Model: ${resolvedModel}`);
   lines.push(`- Created: ${new Date(chat.createdAt).toISOString()}`);
   lines.push("");
   if (chat.systemPrompt.trim()) {

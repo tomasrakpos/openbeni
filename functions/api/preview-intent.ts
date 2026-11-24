@@ -1,119 +1,110 @@
-// API route: POST /api/preview-intent — unified backend skill router & preview-intent
-// classifier. Evaluates which of the 4 backend skills (`chat`, `web_builder`,
-// `game_builder`, `deep_research`) should handle the conversation, runs live web
-// / image search when applicable, and returns the composed skill prompt + headers.
-import { resolveSkillExecution, skillResponseHeaders } from "./_lib/skills/router";
+// POST /api/preview-intent — Server-side skill classification & preview intent endpoint.
+// Evaluates which category (`website`, `game`, `chat`, `deep_thinking`, `other`) applies
+// via the fast LLM classifier (with safe fallback to `chat`) and returns the targeted
+// skill selection and Mode A system prompt for direct browser-BYOK flows.
+
 import {
+  resolveSkillExecution,
+  skillResponseHeaders,
   normalizeSkillMode,
-  type SkillEnv,
-  type SkillMessage,
-} from "./_lib/skills/types";
-import {
-  apiHeaders,
-  clientIp,
-  jsonError,
-  rateLimit,
-  readJsonBody,
-  rejectedOrigin,
-  type SecurityEnv,
-} from "./security";
+  type SkillChatMessage,
+  type SkillRuntimeEnv,
+} from "./_lib/skills";
+import { apiHeaders, clientIp, jsonError, rateLimit, readJsonBody, rejectedOrigin, type SecurityEnv } from "./security";
 
-export type PreviewIntentEnv = SecurityEnv & SkillEnv;
+export type PreviewIntentEnv = SecurityEnv & SkillRuntimeEnv;
 
-function parseMessages(raw: unknown): SkillMessage[] | null {
-  if (!Array.isArray(raw)) return null;
-  const out: SkillMessage[] = [];
-  for (const entry of raw.slice(-24)) {
-    if (!entry || typeof entry !== "object") continue;
-    const obj = entry as { role?: unknown; content?: unknown; hasImages?: unknown };
-    const role = typeof obj.role === "string" ? obj.role : "";
-    const content = typeof obj.content === "string" ? obj.content : "";
-    const hasImages = obj.hasImages === true;
-    if ((role === "user" || role === "assistant" || role === "system") && (content.trim() || hasImages)) {
-      out.push({
-        role,
-        content: content.slice(0, 8000),
-        ...(hasImages ? { hasImages: true } : {}),
-      });
+function sanitizeMessages(raw: unknown): SkillChatMessage[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SkillChatMessage[] = [];
+  for (const item of raw.slice(-20)) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as { role?: unknown; content?: unknown };
+    const role = typeof obj.role === "string" ? obj.role.trim() : "";
+    if (role !== "user" && role !== "assistant" && role !== "system") continue;
+    if (typeof obj.content === "string") {
+      out.push({ role, content: obj.content.slice(0, 12_000) });
+    } else if (Array.isArray(obj.content)) {
+      out.push({ role, content: obj.content });
     }
   }
   return out;
 }
 
-export async function handlePreviewIntent(request: Request, env: PreviewIntentEnv): Promise<Response> {
+export async function handlePreviewIntent(request: Request, env: PreviewIntentEnv = {}): Promise<Response> {
   if (request.method === "OPTIONS") {
-    if (rejectedOrigin(request, env)) {
-      return jsonError(request, env, 403, "Origin is not allowed.");
-    }
+    if (rejectedOrigin(request, env)) return jsonError(request, env, 403, "Origin not allowed.");
     return new Response(null, { status: 204, headers: apiHeaders(request, env) });
   }
+  if (rejectedOrigin(request, env)) return jsonError(request, env, 403, "Origin not allowed.");
+  if (request.method !== "POST") return jsonError(request, env, 405, "Method not allowed.");
 
-  if (rejectedOrigin(request, env)) {
-    return jsonError(request, env, 403, "Origin is not allowed.");
+  const ipLimit = rateLimit("preview-intent", clientIp(request), 60, 60_000);
+  if (!ipLimit.ok) {
+    return jsonError(request, env, 429, "Too many requests.", "rate_limited", {
+      "Retry-After": String(ipLimit.retryAfter),
+    });
   }
 
-  if (request.method !== "POST") {
-    return jsonError(request, env, 405, "Method not allowed.");
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) {
+    return jsonError(request, env, parsed.reason === "too-large" ? 413 : 400, "Invalid request body.");
   }
 
-  const limit = rateLimit("preview-intent", clientIp(request), 90, 60_000);
-  if (!limit.ok) {
-    return jsonError(request, env, 429, "Too many requests.", "rate_limited");
-  }
-
-  const body = await readJsonBody(request);
-  if (!body.ok) {
-    return jsonError(
-      request,
-      env,
-      body.reason === "too-large" ? 413 : 400,
-      body.reason === "too-large" ? "Request body too large." : "Invalid JSON body.",
-    );
-  }
-
-  const payload = body.value as {
+  const payload = parsed.value as {
     messages?: unknown;
     skillMode?: unknown;
-    enableLiveSearch?: unknown;
-  } | null;
-  const messages = parseMessages(payload?.messages);
-  if (!messages) {
-    return jsonError(request, env, 400, "messages must be an array.");
-  }
-
+    providerFormat?: unknown;
+    model?: unknown;
+  };
+  const messages = sanitizeMessages(payload?.messages);
   const skillMode = normalizeSkillMode(payload?.skillMode);
-  const enableLiveSearch = payload?.enableLiveSearch !== false;
+  const providerFormat =
+    typeof payload?.providerFormat === "string" ? payload.providerFormat : undefined;
+  const model = typeof payload?.model === "string" ? payload.model : undefined;
 
-  const ctx = await resolveSkillExecution({
+  const resolved = await resolveSkillExecution({
     messages,
     skillMode,
     env,
-    enableLiveSearch,
+    requestUrl: request.url,
+    providerFormat,
+    model,
   });
 
-  const responseBody = {
-    needsPreview: ctx.needsPreview,
-    confidence: ctx.confidence,
-    category: ctx.previewCategory,
-    source: ctx.source,
-    reason: ctx.reason,
-    skillId: ctx.skillId,
-    skillSource: ctx.source,
-    webSources: ctx.webSources,
-    imageAssets: ctx.imageAssets,
-    systemPrompt: ctx.systemPrompt,
-    // Kept for backwards compatibility with earlier callers
-    builderSystemPrompt: ctx.systemPrompt,
-  };
+  const headers = apiHeaders(request, env, {
+    "Content-Type": "application/json; charset=utf-8",
+    ...skillResponseHeaders(resolved),
+  });
 
-  return new Response(JSON.stringify(responseBody), {
-    status: 200,
-    headers: apiHeaders(request, env, {
-      "Content-Type": "application/json; charset=utf-8",
-      ...skillResponseHeaders(ctx),
+  return new Response(
+    JSON.stringify({
+      category: resolved.classification.category,
+      skillId: resolved.classification.category,
+      source: resolved.classification.source,
+      confidence: resolved.classification.confidence,
+      needsPreview: resolved.needsPreview,
+      previewCategory:
+        resolved.classification.category === "game"
+          ? "game"
+          : resolved.classification.category === "website"
+            ? "website"
+            : "none",
+      detectedEngine: resolved.selection.detectedEngine ?? null,
+      matchedDesignBrand: resolved.selection.matchedDesignBrand ?? null,
+      mode: resolved.selection.mode,
+      selectedSkills: resolved.selection.selected.map((s) => s.id),
+      totalTokens: resolved.selection.totalTokens,
+      maxTokens: resolved.selection.maxTokens,
+      systemPrompt: resolved.modeASystemPrompt,
     }),
-  });
+    { status: 200, headers },
+  );
 }
 
-export const onRequest = async (context: { request: Request; env?: PreviewIntentEnv }) =>
-  handlePreviewIntent(context.request, context.env ?? {});
+export async function onRequest(context: {
+  request: Request;
+  env: PreviewIntentEnv;
+}): Promise<Response> {
+  return handlePreviewIntent(context.request, context.env ?? {});
+}

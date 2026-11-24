@@ -1,6 +1,6 @@
 // Vite build config; change development and production build settings here.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp } from "node:fs/promises";
 import path from "node:path";
 import { defineConfig, type Plugin } from "vitest/config";
 import { loadEnv } from "vite";
@@ -140,7 +140,7 @@ function securityHeaders(): Plugin {
       res.setHeader("Content-Security-Policy", DEV_CSP);
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Referrer-Policy", "no-referrer");
-      res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+      res.setHeader("Permissions-Policy", "camera=(), microphone=(self), geolocation=(), payment=(), usb=()");
       res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
       next();
     });
@@ -241,104 +241,6 @@ function apiMiddleware(env: ServerEnv): Plugin {
   };
 }
 
-/**
- * Development-only shared store for the admin preview.
- *
- * `/admin` on localhost keeps its data in this file instead of the browser, so
- * a provider added in one browser is visible to every other browser (and to
- * the public site) on the same machine — the same behaviour a real database
- * gives a deployed site.
- *
- * The file holds preview API keys in plain text. It only exists while
- * `vite dev` is running, is never part of a build, and is meant for local
- * testing only.
- */
-function devAdminStore(): Plugin {
-  const dir = path.resolve(__dirname, ".dev-admin");
-  const file = path.join(dir, "state.json");
-
-  const install = (server: { middlewares: { use: (fn: (req: IncomingMessage, res: ServerResponse, next: () => void) => void) => void } }) => {
-    server.middlewares.use((req, res, next) => {
-      const requestPath = (req.url ?? "").split("?")[0] ?? "";
-      if (requestPath !== "/api/dev-admin/state") {
-        next();
-        return;
-      }
-      void (async () => {
-        const method = (req.method ?? "GET").toUpperCase();
-        try {
-          if (method === "GET") {
-            let raw: string | null = null;
-            try {
-              raw = await readFile(file, "utf8");
-            } catch {
-              raw = null;
-            }
-            let state: unknown = null;
-            if (raw) {
-              try {
-                state = JSON.parse(raw);
-              } catch {
-                state = null;
-              }
-            }
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/json; charset=utf-8");
-            res.setHeader("Cache-Control", "no-store");
-            res.end(JSON.stringify({ state }));
-            return;
-          }
-
-          if (method === "PUT") {
-            const body = await readBody(req);
-            const parsed: unknown = JSON.parse(body?.toString("utf8") || "null");
-            if (!parsed || typeof parsed !== "object") {
-              res.statusCode = 400;
-              res.setHeader("Content-Type", "application/json; charset=utf-8");
-              res.end(JSON.stringify({ error: { message: "Expected a JSON object." } }));
-              return;
-            }
-            await mkdir(dir, { recursive: true });
-            await writeFile(file, JSON.stringify(parsed), "utf8");
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/json; charset=utf-8");
-            res.setHeader("Cache-Control", "no-store");
-            res.end('{"ok":true}');
-            return;
-          }
-
-          if (method === "DELETE") {
-            await rm(file, { force: true });
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/json; charset=utf-8");
-            res.setHeader("Cache-Control", "no-store");
-            res.end('{"ok":true}');
-            return;
-          }
-
-          res.statusCode = 405;
-          res.end();
-        } catch (error) {
-          res.statusCode = 500;
-          res.setHeader("Content-Type", "application/json; charset=utf-8");
-          res.end(
-            JSON.stringify({
-              error: { message: error instanceof Error ? error.message : "The preview store failed." },
-            }),
-          );
-        }
-      })();
-    });
-  };
-
-  return {
-    name: "apiset-dev-admin-store",
-    configureServer(server) {
-      install(server);
-    },
-  };
-}
-
 export default defineConfig(({ mode }) => {
   // Third argument "" loads every variable, including server-only secrets.
   const env = loadEnv(mode, process.cwd(), "");
@@ -355,7 +257,80 @@ export default defineConfig(({ mode }) => {
     ADMIN_PASSWORD: env.ADMIN_PASSWORD,
     ADMIN_SESSION_SECRET: env.ADMIN_SESSION_SECRET,
     MASTER_ENCRYPTION_KEY: env.MASTER_ENCRYPTION_KEY,
+    SKILL_CLASSIFIER_MODEL: env.SKILL_CLASSIFIER_MODEL,
+    SKILL_CLASSIFIER_BASE_URL: env.SKILL_CLASSIFIER_BASE_URL,
+    SKILL_CLASSIFIER_API_KEY: env.SKILL_CLASSIFIER_API_KEY,
+    SKILL_CLASSIFIER_API_FORMAT: env.SKILL_CLASSIFIER_API_FORMAT,
+    SKILL_CLASSIFIER_TIMEOUT_MS: env.SKILL_CLASSIFIER_TIMEOUT_MS,
+    SKILL_MAX_TOKENS: env.SKILL_MAX_TOKENS,
+    SKILL_DEFAULT_MODE: env.SKILL_DEFAULT_MODE,
+    SKILL_PROVIDER_MODES: env.SKILL_PROVIDER_MODES,
+    SKILL_MODEL_MODES: env.SKILL_MODEL_MODES,
   };
+
+  /** Copies /skills into dist/_skills during production build so Cloudflare Pages ASSETS can serve SKILL.md & references lazily. */
+  const copySkillsAssets = (): Plugin => ({
+    name: "openharness-copy-skills-assets",
+    apply: "build",
+    async closeBundle() {
+      const src = path.resolve(__dirname, "skills");
+      const dst = path.resolve(__dirname, "dist", "_skills");
+      try {
+        await cp(src, dst, { recursive: true, force: true });
+      } catch {
+        // Ignore if skills directory is absent in minimal test builds.
+      }
+    },
+  });
+
+  /** Injects hashed font preloads (critical first-paint subsets only) and the
+   *  configured Supabase project origin preconnect into the built index.html. */
+  const firstLoadHeadHints = (): Plugin => ({
+    name: "openharness-first-load-hints",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(_html, ctx) {
+        const tags: Array<{ tag: string; attrs: Record<string, string | boolean>; injectTo: "head" }> = [];
+        const rawSupabaseUrl = (env.VITE_SUPABASE_URL || env.SUPABASE_URL || "").trim();
+        if (rawSupabaseUrl) {
+          try {
+            const origin = new URL(rawSupabaseUrl).origin;
+            if (origin.startsWith("https://") && origin !== "https://supabase.co") {
+              tags.push({
+                tag: "link",
+                attrs: { rel: "preconnect", href: origin, crossorigin: "" },
+                injectTo: "head",
+              });
+            }
+          } catch {
+            // Ignore malformed URL.
+          }
+        }
+        const bundle = ctx.bundle ?? {};
+        for (const fileName of Object.keys(bundle)) {
+          if (
+            /^assets\/(pixelify-sans-latin-wght-normal|geist-pixel-latin-elsh-normal)-[^/]+\.woff2$/.test(
+              fileName,
+            )
+          ) {
+            tags.push({
+              tag: "link",
+              attrs: {
+                rel: "preload",
+                as: "font",
+                type: "font/woff2",
+                href: `/${fileName}`,
+                crossorigin: "",
+              },
+              injectTo: "head",
+            });
+          }
+        }
+        return tags;
+      },
+    },
+  });
 
   return {
     // The admin panel can only write to Postgres when the server holds both the
@@ -366,7 +341,7 @@ export default defineConfig(({ mode }) => {
         Boolean((env.SUPABASE_URL ?? "").trim() && (env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim()),
       ),
     },
-    plugins: [securityHeaders(), apiMiddleware(serverEnv), devAdminStore(), react(), tailwindcss()],
+    plugins: [securityHeaders(), apiMiddleware(serverEnv), copySkillsAssets(), firstLoadHeadHints(), react(), tailwindcss()],
     server: {
       host: "0.0.0.0",
       allowedHosts: true,
@@ -403,8 +378,6 @@ export default defineConfig(({ mode }) => {
         "lucide-react",
         "framer-motion",
         "sonner",
-        "gsap",
-        "recharts",
         "react-is",
         "cmdk",
         "@radix-ui/react-dialog",
@@ -441,7 +414,6 @@ export default defineConfig(({ mode }) => {
               return "vendor";
             }
             if (id.includes("/dexie/")) return "db";
-            if (id.includes("/gsap/")) return "gsap";
             if (
               id.includes("/clsx/") ||
               id.includes("/tailwind-merge/") ||

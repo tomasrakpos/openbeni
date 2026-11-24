@@ -4,7 +4,6 @@
  * Shared across:
  * - User ProviderWizard (`POST /api/provider-inspect`)
  * - Production Admin Panel (`functions/api/_lib/adminHandlers.ts`)
- * - Local DEV Admin Panel (`src/lib/devAdminMock.ts` via `/api/provider-inspect`)
  *
  * Pipeline:
  * 1. Format detection + `/models` discovery (captures pricing metadata, context

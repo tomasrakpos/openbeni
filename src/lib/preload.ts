@@ -66,6 +66,14 @@ export const loadThreadComposer = once(() =>
   import("@/features/chat/ThreadComposer").then((m) => ({ default: m.ThreadComposer })),
 );
 
+export const loadHalftoneFlowHero = once(() =>
+  import("@/components/ui/halftone-flow-hero"),
+);
+
+export const loadGlassIntro = once(() =>
+  import("@/features/intro/GlassIntro").then((m) => ({ default: m.GlassIntro })),
+);
+
 type IdleHandle = number;
 
 function scheduleIdle(cb: () => void, timeoutMs: number): () => void {
@@ -77,50 +85,66 @@ function scheduleIdle(cb: () => void, timeoutMs: number): () => void {
     const id = win.requestIdleCallback(cb, { timeout: timeoutMs });
     return () => win.cancelIdleCallback?.(id);
   }
-  const id = window.setTimeout(cb, Math.min(timeoutMs, 180));
+  const id = window.setTimeout(cb, Math.min(timeoutMs, 400));
   return () => window.clearTimeout(id);
 }
 
+function isConstrainedNetwork(): boolean {
+  const nav = navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string };
+  };
+  const conn = nav.connection;
+  if (!conn) return false;
+  if (conn.saveData) return true;
+  return conn.effectiveType === "slow-2g" || conn.effectiveType === "2g";
+}
+
 /**
- * Warms the primary navigation surfaces right after first paint (while the
- * entrance finishes), then warms secondary dialogs and chat rendering chunks
- * during idle time so first-click navigation is instant everywhere.
+ * Waits until the initial page has finished loading and settled, then gently
+ * warms only the most likely next-click chunks during browser idle time so
+ * first-load bandwidth and main-thread CPU are never contested.
  */
 export function startBackgroundPreload(): () => void {
   if (typeof window === "undefined") return () => undefined;
 
   let cancelled = false;
-  let cancelWave2: (() => void) | null = null;
+  let timer1: number | null = null;
+  let cancelIdle1: (() => void) | null = null;
+  let cancelIdle2: (() => void) | null = null;
 
-  // Wave 1: highest-priority surfaces visitors open right away.
-  const wave1Timer = window.setTimeout(() => {
-    if (cancelled) return;
-    void Promise.allSettled([
-      loadProvidersPage(),
-      loadSettingsDialog(),
-      loadProviderWizard(),
-      loadModelPicker(),
-    ]).then(() => {
+  const begin = () => {
+    if (cancelled || isConstrainedNetwork()) return;
+    timer1 = window.setTimeout(() => {
       if (cancelled) return;
-      // Wave 2: remaining interactive surfaces + active-conversation chunks.
-      cancelWave2 = scheduleIdle(() => {
+      cancelIdle1 = scheduleIdle(() => {
         if (cancelled) return;
-        void Promise.allSettled([
-          loadSearchDialog(),
-          loadCommandPalette(),
-          loadChatSettingsDialog(),
-          loadAuthPanel(),
-          loadMessageItem(),
-          loadThreadComposer(),
-          loadRightPanel(),
-        ]);
-      }, 900);
-    });
-  }, 60);
+        // Wave 1: lightweight surfaces a first-time visitor is most likely to open.
+        void Promise.allSettled([loadModelPicker(), loadSettingsDialog(), loadAuthPanel()]).then(
+          () => {
+            if (cancelled) return;
+            cancelIdle2 = scheduleIdle(() => {
+              if (cancelled) return;
+              // Wave 2: chat message renderer ready right before their first send.
+              void Promise.allSettled([loadThreadComposer(), loadMessageItem()]);
+            }, 3000);
+          },
+        );
+      }, 2000);
+    }, 2200);
+  };
+
+  const onLoad = () => begin();
+  if (document.readyState === "complete") {
+    begin();
+  } else {
+    window.addEventListener("load", onLoad, { once: true });
+  }
 
   return () => {
     cancelled = true;
-    window.clearTimeout(wave1Timer);
-    cancelWave2?.();
+    window.removeEventListener("load", onLoad);
+    if (timer1 !== null) window.clearTimeout(timer1);
+    cancelIdle1?.();
+    cancelIdle2?.();
   };
 }

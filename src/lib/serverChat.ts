@@ -51,17 +51,22 @@ export interface BackendPreviewIntent {
 }
 
 function parseSkillIdHeader(raw: string | null): SkillId | undefined {
-  if (raw === "chat" || raw === "web_builder" || raw === "game_builder" || raw === "deep_research") {
+  if (
+    raw === "website" ||
+    raw === "game" ||
+    raw === "chat" ||
+    raw === "deep_thinking" ||
+    raw === "other"
+  ) {
     return raw;
   }
   return undefined;
 }
 
 /**
- * Calls the same-origin backend `/api/preview-intent` endpoint to resolve the
- * active skill (`chat`, `web_builder`, `game_builder`, `deep_research`), run
- * live backend search/image lookup when needed, and return the composed skill
- * system prompt + preview-slider decision.
+ * Calls the same-origin backend `/api/preview-intent` endpoint to classify the
+ * request (`website`, `game`, `chat`, `deep_thinking`, `other`) and return the
+ * selected external skills system prompt + preview-slider decision.
  */
 export async function checkBackendPreviewIntent(
   messages: { role: string; content: string; hasImages?: boolean }[],
@@ -214,9 +219,13 @@ export async function streamServerChat(options: ServerChatOptions): Promise<Serv
   if (previewIntentHeader !== null) {
     options.onPreviewIntent?.(previewIntent, previewCategory);
   }
-  const skillId = parseSkillIdHeader(response.headers.get("x-skill-id"));
-  const skillSourcesRaw = Number(response.headers.get("x-skill-search-count") ?? "0");
-  const skillSourcesCount = Number.isFinite(skillSourcesRaw) && skillSourcesRaw > 0 ? skillSourcesRaw : 0;
+  const skillId = parseSkillIdHeader(
+    response.headers.get("x-skill-category") ?? response.headers.get("x-skill-id"),
+  );
+  const skillNamesHeader = response.headers.get("x-skill-names") ?? "";
+  const skillSourcesCount = skillNamesHeader
+    ? skillNamesHeader.split(",").map((s) => s.trim()).filter(Boolean).length
+    : 0;
   if (skillId) {
     options.onSkillResolved?.(skillId, skillSourcesCount);
   }

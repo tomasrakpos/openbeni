@@ -5,14 +5,6 @@ import { getSupabaseAsync, supabaseConfigured } from "@/lib/supabase";
 
 export const DEFAULT_SIGNUP_CREDITS = 5;
 
-async function isDevAdminPreview(): Promise<boolean> {
-  if (!import.meta.env.DEV || typeof window === "undefined" || !window.location.pathname.startsWith("/admin")) {
-    return false;
-  }
-  const { devAdminPreview } = await import("@/lib/devAdminMock");
-  return devAdminPreview();
-}
-
 /** The signed-in Supabase user, as shown in the corner menu. */
 export interface AuthUser {
   id: string;
@@ -80,89 +72,11 @@ interface AuthResponse {
   message: string | null;
 }
 
-interface DevAccountSnapshot {
-  user: AuthUser;
-  profile: SessionProfile;
-  tokens: UserApiToken[];
-}
-
-const DEV_ACCOUNT_KEY = "openharneks.devAccount.v1";
-
-function canUseDevInstantAuth(): boolean {
-  return import.meta.env.DEV && !supabaseConfigured();
-}
-
-function readDevAccount(): DevAccountSnapshot | null {
-  if (!canUseDevInstantAuth()) return null;
-  try {
-    const raw = window.localStorage.getItem(DEV_ACCOUNT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as DevAccountSnapshot;
-    if (!parsed?.user?.id || !parsed?.profile?.id) return null;
-    return {
-      user: parsed.user,
-      profile: {
-        ...parsed.profile,
-        credits: typeof parsed.profile.credits === "number" ? parsed.profile.credits : DEFAULT_SIGNUP_CREDITS,
-      },
-      tokens: Array.isArray(parsed.tokens) ? parsed.tokens : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeDevAccount(snapshot: DevAccountSnapshot | null): void {
-  if (!import.meta.env.DEV) return;
-  try {
-    if (snapshot) window.localStorage.setItem(DEV_ACCOUNT_KEY, JSON.stringify(snapshot));
-    else window.localStorage.removeItem(DEV_ACCOUNT_KEY);
-  } catch {
-    // Storage may be unavailable in private browsing.
-  }
-}
-
-function randomTokenSecret(): string {
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  return `oh_${encoded}`;
-}
-
-function createDevAccountSnapshot(): DevAccountSnapshot {
-  const now = new Date().toISOString();
-  const suffix = Math.random().toString(36).slice(2, 6);
-  const id = `dev-user-${suffix}`;
-  const email = `user.${suffix}@openharneks.local`;
-  const displayName = `Member ${suffix.toUpperCase()}`;
-  return {
-    user: { id, email, name: displayName, avatarUrl: null },
-    profile: {
-      id,
-      email,
-      displayName,
-      role: "user",
-      status: "active",
-      credits: DEFAULT_SIGNUP_CREDITS,
-      dailyTokenLimit: null,
-      monthlyTokenLimit: null,
-      createdAt: now,
-      lastSeenAt: now,
-      isAdmin: false,
-    },
-    tokens: [],
-  };
-}
-
 interface AuthState {
   ready: boolean;
   accountsEnabled: boolean;
   signupOpen: boolean;
   signedIn: boolean;
-  /** True only in DEV when Supabase is not configured and instant preview login was used. */
-  devMockSession: boolean;
   /** Supabase user (name/avatar come from the provider metadata). */
   user: AuthUser | null;
   /** The visitor chose "continue without signing in" on the login page. */
@@ -180,10 +94,28 @@ interface AuthState {
   loadTokens: () => Promise<void>;
   createToken: (name: string) => Promise<{ token: UserApiToken; secret: string }>;
   revokeToken: (id: string) => Promise<void>;
-  resetDevCredits: () => void;
   continueAsGuest: () => void;
   exitGuest: () => void;
   signOut: () => Promise<void>;
+}
+
+function hasStoredSupabaseSessionOrCallback(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = window.localStorage.getItem("openharness-auth");
+    if (raw && raw.length > 20) return true;
+  } catch {
+    // Storage unavailable; fall through to URL callback check.
+  }
+  try {
+    const search = window.location.search;
+    const hash = window.location.hash;
+    if (/[?&](code|token_hash|type=recovery)=/.test(search)) return true;
+    if (/(?:^|[#&])(access_token|refresh_token)=/.test(hash)) return true;
+  } catch {
+    // Ignore URL inspection errors.
+  }
+  return false;
 }
 
 const GUEST_KEY = "openharneks.guest.v1";
@@ -228,77 +160,31 @@ async function loadProfile(): Promise<SessionProfile | null> {
 
 let subscribed = false;
 
-const INITIAL_DEV_ACCOUNT = typeof window !== "undefined" ? readDevAccount() : null;
-
 export const useAuthStore = create<AuthState>()((set, get) => ({
-  ready: canUseDevInstantAuth(),
+  ready: false,
   accountsEnabled: false,
   signupOpen: false,
-  signedIn: Boolean(INITIAL_DEV_ACCOUNT),
-  devMockSession: Boolean(INITIAL_DEV_ACCOUNT),
-  user: INITIAL_DEV_ACCOUNT?.user ?? null,
+  signedIn: false,
+  user: null,
   guest: typeof window !== "undefined" ? readGuest() : false,
-  profile: INITIAL_DEV_ACCOUNT?.profile ?? null,
-  tokens: INITIAL_DEV_ACCOUNT?.tokens ?? [],
+  profile: null,
+  tokens: [],
   tokensLoading: false,
   error: null,
 
   init: async () => {
-    const [config, preview] = await Promise.all([fetchConfig(), isDevAdminPreview()]);
+    const config = await fetchConfig();
     set({
-      accountsEnabled: preview || (config.accountsEnabled && supabaseConfigured()),
+      accountsEnabled: config.accountsEnabled && supabaseConfigured(),
       signupOpen: config.signupOpen,
       guest: readGuest(),
     });
 
-    // DEV without Supabase: restore local preview account if previously signed in,
-    // and sync live online presence + blocked status with the shared admin store.
-    if (!preview && canUseDevInstantAuth()) {
-      const saved = readDevAccount();
-      if (saved) {
-        set({
-          signedIn: true,
-          devMockSession: true,
-          user: saved.user,
-          profile: saved.profile,
-          tokens: saved.tokens,
-          guest: false,
-          ready: true,
-        });
-        const syncPresence = () => {
-          const cur = get().profile;
-          if (!cur) return;
-          void import("@/lib/devAdminMock").then(({ syncDevUserPresence }) =>
-            syncDevUserPresence({
-              id: cur.id,
-              email: cur.email,
-              displayName: cur.displayName,
-            }).then(({ blocked }) => {
-              const latest = get().profile;
-              if (!latest) return;
-              const nextStatus = blocked ? "blocked" : "active";
-              if (latest.status !== nextStatus) {
-                const updated = { ...latest, status: nextStatus as "active" | "blocked", lastSeenAt: new Date().toISOString() };
-                set({ profile: updated });
-                const snap = readDevAccount();
-                if (snap) writeDevAccount({ ...snap, profile: updated });
-              }
-            }),
-          );
-        };
-        syncPresence();
-        window.setInterval(() => {
-          if (document.visibilityState === "visible") syncPresence();
-        }, 60_000);
-        return;
-      }
-      set({ ready: true });
-      return;
-    }
-
-    // Restore the Supabase session before anything else, so a page refresh keeps
-    // the visitor signed in. Without a session the visitor stays signed out.
-    const supabase = preview || !supabaseConfigured() ? null : await getSupabaseAsync();
+    // Restore the Supabase session only when a stored session or OAuth callback
+    // is actually present. First-time guests skip downloading ~225 KB of
+    // `@supabase/supabase-js` on initial page load; signing in loads it on demand.
+    const needsSupabaseNow = supabaseConfigured() && hasStoredSupabaseSessionOrCallback();
+    const supabase = needsSupabaseNow ? await getSupabaseAsync() : null;
     if (supabase) {
       const { data } = await supabase.auth.getSession();
       const restored = sessionUser(data.session);
@@ -352,31 +238,6 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   refresh: async () => {
-    if (get().devMockSession) {
-      const saved = readDevAccount();
-      if (saved) {
-        const { syncDevUserPresence } = await import("@/lib/devAdminMock");
-        const { blocked } = await syncDevUserPresence({
-          id: saved.profile.id,
-          email: saved.profile.email,
-          displayName: saved.profile.displayName,
-        });
-        const updatedProfile = {
-          ...saved.profile,
-          status: (blocked ? "blocked" : "active") as "active" | "blocked",
-          lastSeenAt: new Date().toISOString(),
-        };
-        writeDevAccount({ ...saved, profile: updatedProfile });
-        set({
-          signedIn: true,
-          user: saved.user,
-          profile: updatedProfile,
-          tokens: saved.tokens,
-          error: null,
-        });
-      }
-      return;
-    }
     if (!get().accountsEnabled) return;
     try {
       const profile = await loadProfile();
@@ -450,24 +311,6 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   signInWithGoogle: async () => {
     const supabase = await getSupabaseAsync();
     if (!supabase) {
-      // In local DEV preview without Supabase env vars, create an instant demo
-      // account with 5 starter credits so the full post-signup flow can be tested.
-      // Production builds compile this branch out completely (`import.meta.env.DEV` -> false).
-      if (canUseDevInstantAuth()) {
-        const snapshot = readDevAccount() ?? createDevAccountSnapshot();
-        writeDevAccount(snapshot);
-        setGuestFlag(false);
-        set({
-          signedIn: true,
-          devMockSession: true,
-          user: snapshot.user,
-          profile: snapshot.profile,
-          tokens: snapshot.tokens,
-          guest: false,
-          error: null,
-        });
-        return;
-      }
       console.error(
         "Supabase env missing: set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable Google sign-in.",
       );
@@ -482,25 +325,20 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   consumeLocalCredit: (amount = 1) => {
-    const { profile, user, tokens, devMockSession } = get();
+    const { profile } = get();
     if (!profile) return;
     const nextCredits = Math.max(0, profile.credits - Math.max(1, amount));
-    const nextProfile: SessionProfile = { ...profile, credits: nextCredits };
-    set({ profile: nextProfile });
-    if (devMockSession && user) {
-      writeDevAccount({ user, profile: nextProfile, tokens });
-    }
+    set({ profile: { ...profile, credits: nextCredits } });
   },
 
   loadTokens: async () => {
-    const { signedIn, devMockSession, accountsEnabled } = get();
+    const { signedIn, accountsEnabled } = get();
     if (!signedIn) {
       set({ tokens: [] });
       return;
     }
-    if (devMockSession || !accountsEnabled) {
-      const saved = readDevAccount();
-      set({ tokens: saved?.tokens ?? get().tokens });
+    if (!accountsEnabled) {
+      set({ tokens: [] });
       return;
     }
     set({ tokensLoading: true });
@@ -517,26 +355,8 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   createToken: async (rawName: string) => {
     const name = rawName.trim().slice(0, 64);
     if (!name) throw new Error("Enter a token name.");
-    const { signedIn, devMockSession, accountsEnabled, user, profile, tokens } = get();
+    const { signedIn } = get();
     if (!signedIn) throw new Error("Sign in to create a token.");
-
-    if (devMockSession || !accountsEnabled) {
-      if (tokens.length >= 10) throw new Error("You can have up to 10 active tokens.");
-      const secret = randomTokenSecret();
-      const token: UserApiToken = {
-        id: `tok_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-        name,
-        prefix: `${secret.slice(0, 10)}…${secret.slice(-4)}`,
-        createdAt: new Date().toISOString(),
-        lastUsedAt: null,
-      };
-      const nextTokens = [token, ...tokens];
-      set({ tokens: nextTokens });
-      if (devMockSession && user && profile) {
-        writeDevAccount({ user, profile, tokens: nextTokens });
-      }
-      return { token, secret };
-    }
 
     const res = await apiFetch<{ token: UserApiToken; secret: string }>("/api/tokens", {
       method: "POST",
@@ -547,28 +367,8 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   revokeToken: async (id: string) => {
-    const { devMockSession, accountsEnabled, user, profile, tokens } = get();
-    if (devMockSession || !accountsEnabled) {
-      const nextTokens = tokens.filter((t) => t.id !== id);
-      set({ tokens: nextTokens });
-      if (devMockSession && user && profile) {
-        writeDevAccount({ user, profile, tokens: nextTokens });
-      }
-      return;
-    }
     await apiFetch(`/api/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
     set((state) => ({ tokens: state.tokens.filter((t) => t.id !== id) }));
-  },
-
-  resetDevCredits: () => {
-    if (!import.meta.env.DEV) return;
-    const { devMockSession, user, profile, tokens } = get();
-    if (!devMockSession || !profile) return;
-    const nextProfile = { ...profile, credits: DEFAULT_SIGNUP_CREDITS };
-    set({ profile: nextProfile });
-    if (user) {
-      writeDevAccount({ user, profile: nextProfile, tokens });
-    }
   },
 
   continueAsGuest: () => {
@@ -582,23 +382,9 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
   },
 
   signOut: async () => {
-    if (await isDevAdminPreview()) {
-      const { disableDevAdminPreview } = await import("@/lib/devAdminMock");
-      await disableDevAdminPreview();
-      setGuestFlag(false);
-      set({ signedIn: false, devMockSession: false, user: null, profile: null, tokens: [], guest: false });
-      window.location.assign("/");
-      return;
-    }
-    if (get().devMockSession) {
-      writeDevAccount(null);
-      setGuestFlag(false);
-      set({ signedIn: false, devMockSession: false, user: null, profile: null, tokens: [], guest: false });
-      return;
-    }
     const supabase = await getSupabaseAsync();
     await supabase?.auth.signOut();
     setGuestFlag(false);
-    set({ signedIn: false, devMockSession: false, user: null, profile: null, tokens: [], guest: false });
+    set({ signedIn: false, user: null, profile: null, tokens: [], guest: false });
   },
 }));

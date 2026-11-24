@@ -1,11 +1,12 @@
 // Reusable UI primitive prompt-composer; adjust its default appearance and behavior here.
 import * as React from "react";
-import { gsap } from "gsap";
 import { ArrowUp, ChevronDown, Coins, Cpu, Loader2, Paperclip, Route } from "lucide-react";
+import { OpenHarneksModelIcon } from "@/components/Logo";
 import { LiquidGlass } from "@/components/ui/apple-tahoe-liquid-glass-button";
 import { GlassButton } from "@/components/ui/glass-button";
 import { MorphMenu, type MorphMenuItem } from "@/components/ui/morph-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useJellyStretch } from "@/lib/useJellyStretch";
 import type { Tier } from "@/lib/types";
 
 /*
@@ -54,8 +55,10 @@ export type PromptComposerModel = {
   tier?: Tier;
   /** True when the model belongs to a user-added (BYOK) provider. */
   userAdded?: boolean;
-  /** True when this option represents a Free Model Router. */
+  /** True when this option represents a user-facing Free Model Router. */
   isRouter?: boolean;
+  /** True for native OpenHarneks models backed by an admin router (custom brand icon, no router badge). */
+  isNativeBrand?: boolean;
   /** Number of currently active free models behind this router. */
   routerActiveCount?: number;
   /** True when the option cannot be selected (e.g. router with 0 active models). */
@@ -349,8 +352,9 @@ export default function PromptComposer({
   const cardRef = React.useRef(null as HTMLFormElement | null);
   const inputRef = React.useRef(null as HTMLTextAreaElement | null);
   const fileRef = React.useRef(null as HTMLInputElement | null);
+  const sendJellyRef = useJellyStretch<HTMLButtonElement>();
   const prevHeight = React.useRef(0);
-  const buildTl = React.useRef(null as gsap.core.Timeline | null);
+  const buildTimers = React.useRef<number[]>([]);
 
   const [internalPrompt, setInternalPrompt] = React.useState("");
   const prompt = value ?? internalPrompt;
@@ -450,8 +454,13 @@ export default function PromptComposer({
     setPhase("building");
   };
 
+  const clearBuildTimers = React.useCallback(() => {
+    for (const id of buildTimers.current) window.clearTimeout(id);
+    buildTimers.current = [];
+  }, []);
+
   const reset = (keep: boolean) => {
-    buildTl.current?.kill();
+    clearBuildTimers();
     if (cardRef.current) prevHeight.current = cardRef.current.offsetHeight;
     if (!keep) {
       updatePrompt("");
@@ -463,21 +472,19 @@ export default function PromptComposer({
   // the build log: one step at a time, then the preview
   React.useEffect(() => {
     if (phase !== "building") return;
-    const tl = gsap.timeline();
-    buildSteps.forEach((_, i) => tl.call(() => setStep(i + 1), undefined, (i + 1) * (reduced ? 0.35 : 0.72)));
-    tl.call(
-      () => {
-        if (cardRef.current) prevHeight.current = cardRef.current.offsetHeight;
-        setPhase("done");
-      },
-      undefined,
-      "+=0.45",
-    );
-    buildTl.current = tl;
-    return () => {
-      tl.kill();
-    };
-  }, [phase, reduced, buildSteps]);
+    clearBuildTimers();
+    const stepMs = (reduced ? 0.35 : 0.72) * 1000;
+    buildSteps.forEach((_, i) => {
+      const id = window.setTimeout(() => setStep(i + 1), (i + 1) * stepMs);
+      buildTimers.current.push(id);
+    });
+    const doneId = window.setTimeout(() => {
+      if (cardRef.current) prevHeight.current = cardRef.current.offsetHeight;
+      setPhase("done");
+    }, buildSteps.length * stepMs + 450);
+    buildTimers.current.push(doneId);
+    return clearBuildTimers;
+  }, [phase, reduced, buildSteps, clearBuildTimers]);
 
   // the card morphs between its three bodies instead of jumping
   useIsoLayoutEffect(() => {
@@ -485,29 +492,34 @@ export default function PromptComposer({
     if (!card || !prevHeight.current) return;
     const from = prevHeight.current;
     prevHeight.current = 0;
-    if (reduced) return;
-    const kids = card.querySelectorAll(".ppc-enter");
-    const tw = gsap.fromTo(
-      card,
-      { height: from },
-      { height: card.offsetHeight, duration: 0.6, ease: "expo.out", clearProps: "height" },
+    if (reduced || typeof card.animate !== "function") return;
+    const to = card.offsetHeight;
+    const anims: Animation[] = [];
+    anims.push(
+      card.animate(
+        [{ height: `${from}px` }, { height: `${to}px` }],
+        { duration: 600, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+      ),
     );
-    const tk = gsap.fromTo(
-      kids,
-      { opacity: 0, y: 12, filter: "blur(6px)" },
-      {
-        opacity: 1,
-        y: 0,
-        filter: "blur(0px)",
-        duration: 0.55,
-        stagger: 0.05,
-        ease: "power3.out",
-        clearProps: "filter,transform",
-      },
-    );
+    const kids = card.querySelectorAll<HTMLElement>(".ppc-enter");
+    kids.forEach((kid, idx) => {
+      anims.push(
+        kid.animate(
+          [
+            { opacity: 0, transform: "translateY(12px)", filter: "blur(6px)" },
+            { opacity: 1, transform: "translateY(0px)", filter: "blur(0px)" },
+          ],
+          {
+            duration: 550,
+            delay: idx * 50,
+            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+            fill: "backwards",
+          },
+        ),
+      );
+    });
     return () => {
-      tw.kill();
-      tk.kill();
+      for (const anim of anims) anim.cancel();
     };
   }, [phase, reduced]);
 
@@ -649,7 +661,11 @@ export default function PromptComposer({
       return {
         id: m.id,
         label: m.label,
-        icon: m.isRouter ? <Route className="size-3.5 text-[var(--primary)]" aria-hidden="true" /> : undefined,
+        icon: m.isRouter ? (
+          <Route className="size-3.5 text-[var(--primary)]" aria-hidden="true" />
+        ) : m.isNativeBrand ? (
+          <OpenHarneksModelIcon size={16} variant="mark" />
+        ) : undefined,
         meta: metaNode,
         sectionHeader,
         checked: selectedIndex === i,
@@ -821,6 +837,8 @@ export default function PromptComposer({
                       >
                         {selectedModel?.isRouter ? (
                           <Route size={14} strokeWidth={1.75} className="ppc-pill-ic" aria-hidden="true" />
+                        ) : selectedModel?.isNativeBrand ? (
+                          <OpenHarneksModelIcon size={15} variant="mark" className="ppc-pill-ic" />
                         ) : (
                           <Cpu size={14} strokeWidth={1.75} className="ppc-pill-ic" aria-hidden="true" />
                         )}
@@ -842,6 +860,7 @@ export default function PromptComposer({
                 </div>
 
                 <button
+                  ref={sendJellyRef}
                   type={streaming ? "button" : "submit"}
                   className="ppc-send"
                   data-mode={streaming ? "stop" : "send"}
@@ -1127,6 +1146,7 @@ const PPC_CSS = `
 
 .ppc-send{
   position:relative;width:36px;height:36px;margin-inline-start:2px;border-radius:50%;display:grid;place-items:center;flex:none;
+  touch-action:none;
   background:linear-gradient(160deg,var(--ppc-a1),var(--ppc-a2) 48%,var(--ppc-a3));
   box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 4px 16px var(--ppc-glow);
   transition:transform .2s cubic-bezier(.16,1,.3,1),filter .2s,opacity .2s;
@@ -1134,8 +1154,8 @@ const PPC_CSS = `
 .ppc-send svg{width:17px;height:17px;color:var(--ppc-ink)}
 .ppc-send[data-ready="false"]{filter:saturate(.35) brightness(.9);opacity:.55}
 .ppc-send:disabled{cursor:not-allowed}
-.ppc-send:hover:not(:disabled){transform:scale(1.06)}
-.ppc-send:active:not(:disabled){transform:scale(.94)}
+.ppc-send:hover:not(:disabled):not([data-jelly-stretching="true"]){transform:scale(1.06)}
+.ppc-send:active:not(:disabled):not([data-jelly-stretching="true"]){transform:scale(.94)}
 .ppc-send[data-mode="stop"]{
   background:var(--destructive);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 4px 18px color-mix(in oklab,var(--destructive) 42%,transparent);

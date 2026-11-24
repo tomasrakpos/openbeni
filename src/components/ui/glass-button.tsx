@@ -1,6 +1,7 @@
 // Reusable Orange Glass Button adapted from "Glass Button – Orange.html"
 // for the chat composer controls (circular icon + compact pill variants).
 import * as React from "react";
+import { attachJellyStretch } from "@/lib/useJellyStretch";
 import { cn } from "@/lib/utils";
 
 const GLASS_BTN_CSS_ID = "oh-orange-glass-button-css";
@@ -36,7 +37,7 @@ const GLASS_BTN_CSS = `
   --ogb-k: 1.7;
 }
 
-.ogb-wrap:has(> .ogb-btn:active:not(:disabled)) {
+.ogb-wrap:not([data-jelly-stretching="true"]):has(> .ogb-btn:active:not(:disabled)) {
   transform: rotateX(22deg);
 }
 
@@ -98,6 +99,7 @@ const GLASS_BTN_CSS = `
   isolation: isolate;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  touch-action: none;
   -webkit-backdrop-filter: blur(clamp(2px, 0.16em, 6px));
   backdrop-filter: blur(clamp(2px, 0.16em, 6px));
   transition: all var(--ogb-anim-time) var(--ogb-anim-ease);
@@ -122,6 +124,11 @@ const GLASS_BTN_CSS = `
     0 0 oklch(from var(--background) l c h);
 }
 
+.ogb-wrap:not([data-jelly-stretching="true"]) > .ogb-btn:hover:not(:disabled),
+.ogb-wrap:not([data-jelly-stretching="true"]) > .ogb-btn[aria-expanded="true"] {
+  transform: scale(0.975);
+}
+
 .ogb-wrap > .ogb-btn:hover:not(:disabled),
 .ogb-wrap > .ogb-btn[aria-expanded="true"] {
   -webkit-backdrop-filter: blur(0.05em);
@@ -132,7 +139,6 @@ const GLASS_BTN_CSS = `
     0 0.16em 0.08em -0.08em oklch(from var(--ogb-tint) l c h / calc(42% * var(--ogb-k))),
     0 0 0.06em 0.12em inset oklch(from var(--background) l c h / 42%),
     0 0 oklch(from var(--background) l c h);
-  transform: scale(0.975);
 }
 
 .ogb-wrap > .ogb-btn:disabled {
@@ -361,8 +367,28 @@ export const GlassButton = React.forwardRef<HTMLButtonElement, GlassButtonProps>
 ) {
   ensureGlassButtonCss();
 
+  const wrapRef = React.useRef<HTMLSpanElement | null>(null);
+  const btnRef = React.useRef<HTMLButtonElement | null>(null);
+
+  const setBtnRef = React.useCallback(
+    (node: HTMLButtonElement | null) => {
+      btnRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+
+  React.useEffect(() => {
+    const btn = btnRef.current;
+    const wrap = wrapRef.current;
+    if (!btn || !wrap) return;
+    return attachJellyStretch(btn, wrap);
+  }, []);
+
   return (
     <span
+      ref={wrapRef}
       className={cn(
         "ogb-wrap",
         variant === "icon" ? "ogb-icon" : "ogb-pill",
@@ -370,7 +396,7 @@ export const GlassButton = React.forwardRef<HTMLButtonElement, GlassButtonProps>
         wrapClassName,
       )}
     >
-      <button ref={ref} type={type} className={cn("ogb-btn", className)} {...props}>
+      <button ref={setBtnRef} type={type} className={cn("ogb-btn", className)} {...props}>
         <span className="ogb-inner">{children}</span>
       </button>
       <span className="ogb-shadow" aria-hidden="true" />

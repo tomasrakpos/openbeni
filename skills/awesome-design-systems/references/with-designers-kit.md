@@ -1,0 +1,89 @@
+# Design Systems with Designer Kits (85)
+
+Systems that ship a downloadable Figma/Sketch/Photoshop/XD file — useful for mining component structures, auto layout patterns, and design token organization.
+
+- [Aalto University](https://brand.aalto.fi/) — Components · Voice & Tone · Designers Kit
+- [Adjust Atlas](https://atlas.adeven.com) — Components · Voice & Tone · Designers Kit
+- [Adobe Spectrum](https://spectrum.adobe.com) — Components · Voice & Tone · Designers Kit · [source](https://github.com/adobe/react-spectrum)
+- [Alaska Airlines](https://auro.alaskaair.com/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/AlaskaAirlines)
+- [Alibaba Ant Design](https://ant.design) — Components · Voice & Tone · Designers Kit · [source](https://github.com/ant-design/ant-design/)
+- [Amplify UI](https://ui.docs.amplify.aws/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/aws-amplify/amplify-ui/)
+- [Apple Developer Design Guidelines](https://developer.apple.com/design/) — Designers Kit
+- [Astro UXDS](https://astrouxds.com/) — Components · Designers Kit · [source](https://github.com/RocketCommunicationsInc/astro-components)
+- [Atlassian Design System](https://atlassian.design) — Components · Voice & Tone · Designers Kit · [source](https://bitbucket.org/atlassian/atlassian-frontend-mirror/)
+- [Audi UI Kit](https://www.audi.com/ci/en/guides/user-interface/introduction.html) — Components · Designers Kit · [source](https://github.com/audi/audi-ui)
+- [Aurora (Government of Canada)](https://design.gccollab.ca/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/gctools-outilsgc/design-system)
+- [AWS Cloudscape Design System](https://cloudscape.design/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/cloudscape-design/components)
+- [Backpack (Skyscanner)](https://skyscanner.design/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/skyscanner/backpack)
+- [BBC GEL (Global Experience Language)](https://www.bbc.co.uk/gel) — Components · Voice & Tone · Designers Kit
+- [Bento DS](https://bento-ds.com) — Components · Designers Kit · [source](https://github.com/buildo/bento-design-system)
+- [Blueprint](https://blueprintjs.com/) — Components · Designers Kit · [source](https://github.com/palantir/blueprint)
+- [Bold (Bridge Design System)](https://bold.bridge.ufsc.br/) — Components · Designers Kit · [source](https://github.com/laboratoriobridge/bold)
+- [BuzzFeed Solid](https://solid.buzzfeed.com/) — Components · Designers Kit · [source](https://github.com/buzzfeed/solid)
+- [Cards Binary Design](https://github.com/opensource-cards/binary-ui) — Components · Voice & Tone · Designers Kit · [source](https://github.com/opensource-cards/binary-ui)
+- [Cedar](https://rei.github.io/rei-cedar-docs/) — Components · Designers Kit · [source](https://github.com/rei/rei-cedar)
+- [Co-op Experience Library](https://www.coop.co.uk/experience-library/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/coopdigital/experience-library)
+- [Contentful Forma 36](https://f36.contentful.com/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/contentful/forma-36)
+- [Decathlon Design System - Vitamin](https://decathlon.design/) — Components · Designers Kit · [source](https://github.com/decathlon/vitamin-web)
+- [Documenso Design System](https://documenso.com/design-system) — Components · Designers Kit · [source](https://github.com/documenso/documenso)
+- [Duet](https://www.duetds.com) — Components · Designers Kit
+- [Elastic UI Framework](https://elastic.github.io/eui/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/elastic/eui)
+- [ENGIE Fluid Design System](https://www.engie.design) — Components · Designers Kit
+- [Estonia Country Design Guidelines](https://brand.estonia.ee) — Components · Voice & Tone · Designers Kit
+- [Finastra Design System](https://design.fusionfabric.cloud/) — Components · Designers Kit · [source](https://github.com/fusionfabric/finastra-design-system)
+- [Finland Toolbox](https://toolbox.finland.fi/) — Voice & Tone · Designers Kit
+- [Firefox Photon Design System](https://design.firefox.com/photon) — Components · Voice & Tone · Designers Kit · [source](https://github.com/FirefoxUX/photon)
+- [Fish Tank Design System](https://fishtank.bna.com/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/bloombergindustry/fishtank-vue)
+- [Flame Design System Santander](https://bancosantander.invisionapp.com/dsm/santander-group/flame-ds-santander) — Components · Voice & Tone · Designers Kit
+- [Flowbite Design System](https://www.figma.com/community/file/1179442320711977498) — Components · Designers Kit · [source](https://github.com/themesberg/flowbite)
+- [Fluent UI](https://developer.microsoft.com/en-us/fluentui#/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/microsoft/fluentui)
+- [Foundation](https://get.foundation/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/foundation/foundation-sites)
+- [Foyer Design System](https://design.foyer.lu/) — Components · Designers Kit
+- [French Government Design System](https://www.systeme-de-design.gouv.fr/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/GouvernementFR/dsfr)
+- [GitHub Primer](https://primer.style/) — Components · Designers Kit · [source](https://github.com/primer/)
+- [GitLab Design System - Pajamas](https://design.gitlab.com/) — Components · Voice & Tone · Designers Kit · [source](https://gitlab.com/gitlab-org/design.gitlab.com)
+- [Google Material Design](https://material.io/guidelines/#introduction-goals) — Components · Voice & Tone · Designers Kit · [source](https://github.com/material-components/material-components)
+- [Halstack](https://developer.dxc.com/design/guidelines/principles/overview) — Components · Designers Kit · [source](https://github.com/dxc-technology/halstack-style-guide)
+- [HashiCorp Helios](https://helios.hashicorp.design) — Components · Voice & Tone · Designers Kit · [source](https://github.com/hashicorp/design-system)
+- [IBM Carbon](https://www.carbondesignsystem.com/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/ibm/carbon-components)
+- [Intuit Harmony](https://designsystem.quickbooks.com/) — Components · Voice & Tone · Designers Kit
+- [JotaDS](https://jota.meiuca.co/) — Components · Designers Kit · [source](https://github.com/Meiuca/jota-ds-react)
+- [Just Eat Takeaway.com PIE Design System](https://pie.design/) — Components · Designers Kit · [source](https://github.com/justeattakeaway/pie)
+- [Kiwi.com Orbit](https://orbit.kiwi) — Components · Designers Kit · [source](https://github.com/kiwicom/orbit-components/)
+- [Kontur](https://guides.kontur.ru/) — Components · Designers Kit · [source](https://github.com/skbkontur/retail-ui/)
+- [Latitude](https://www.flexport.com/design) — Components · Voice & Tone · Designers Kit · [source](https://github.com/flexport/latitude/)
+- [Mail.ru Group Paradigm](https://design.mail.ru/) — Components · Voice & Tone · Designers Kit
+- [Materialize CSS](https://materializecss.com/) — Components · Designers Kit · [source](https://github.com/Dogfalo/materialize)
+- [Meetup Swarm](https://meetup.github.io/swarm-design-system/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/meetup/swarm-design-system/)
+- [Mesh Design System](https://www.meshdesignsystem.com/) — Components · Designers Kit
+- [Microsoft Fluent](https://www.microsoft.com/design/fluent/) — Components · Designers Kit · [source](https://github.com/microsoft/fluentui)
+- [MongoDB Design System](http://mongodb.design) — Components · Designers Kit · [source](https://github.com/mongodb/design)
+- [Morningstar Design System](http://designsystem.morningstar.com/) — Components · Voice & Tone · Designers Kit
+- [Nordhealth](https://nordhealth.design/) — Components · Designers Kit
+- [Okta Odyssey Design System](https://odyssey.okta.design) — Components · Designers Kit · [source](https://github.com/okta/odyssey)
+- [Ontario Design System](https://designsystem.ontario.ca/) — Components · Designers Kit · [source](https://designsystem.ontario.ca/docs/documentation/release-notes.html#latest)
+- [Oracle Redwood](https://redwood.oracle.com) — Components · Designers Kit
+- [PatternFly](https://www.patternfly.org/v4/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/patternfly)
+- [Porsche Design System](https://designsystem.porsche.com) — Components · Designers Kit · [source](https://github.com/porsche-design-system/porsche-design-system)
+- [Pulse Design System](https://pulse.heartbeat.ua/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/heartbeatua/Pulse-Boilerplate)
+- [Reach UI](https://reach.tech/) — Components · Designers Kit · [source](https://github.com/reach/reach-ui)
+- [Reshaped](https://reshaped.so) — Components · Designers Kit
+- [Salesforce Lightning Design System](https://www.lightningdesignsystem.com) — Components · Voice & Tone · Designers Kit · [source](https://github.com/salesforce-ux/design-system)
+- [Scania Digital Design System](https://digitaldesign.scania.com/home) — Components · Designers Kit · [source](https://github.com/scania-digital-design-system/sdds)
+- [Seeds](https://sproutsocial.com/seeds) — Components · Voice & Tone · Designers Kit
+- [Semi Design](https://semi.design/en-US) — Components · Designers Kit · [source](https://github.com/DouyinFE/semi-design)
+- [Semrush Intergalactic Design System](https://i.semrush.com/) — Components · Designers Kit · [source](https://github.com/semrush/intergalactic)
+- [Shopify Polaris](https://polaris.shopify.com) — Components · Voice & Tone · Designers Kit · [source](https://github.com/Shopify/polaris)
+- [Siemens iX](https://ix.siemens.io/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/siemens/ix)
+- [Singapore Government Design System](https://www.designsystem.tech.gov.sg/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/govtechsg/sgds)
+- [Telefónica Mística](https://brandfactory.telefonica.com/mistica) — Components · Designers Kit · [source](https://github.com/Telefonica/mistica)
+- [Tizen CircularUI](https://developer.samsung.com/one-ui-watch-tizen) — Components · Designers Kit · [source](https://github.com/Samsung/Tizen.CircularUI)
+- [Twilio Paste](https://paste.twilio.design/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/twilio-labs/paste)
+- [U.S. Web Design Standards](https://designsystem.digital.gov/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/uswds/uswds)
+- [Ubuntu Vanilla framework](https://vanillaframework.io/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/canonical-web-and-design/vanilla-framework)
+- [Uiverse](https://uiverse.io) — Components · Voice & Tone · Designers Kit · [source](https://github.com/uiverse-io/galaxy)
+- [Untitled UI](https://www.untitledui.com/react/) — Components · Designers Kit · [source](https://github.com/untitleduico/react/)
+- [USPTO UI Design Library](https://uspto.github.io/designpatterns/index.html) — Components · Designers Kit · [source](https://github.com/uspto/designpatterns)
+- [Vibe](https://style.monday.com/) — Components · Designers Kit · [source](https://github.com/mondaycom/vibe)
+- [VMware Clarity Design System](https://clarity.design/) — Components · Voice & Tone · Designers Kit · [source](https://github.com/vmware/clarity)
+- [VTEX Styleguide](https://styleguide.vtex.com/) — Components · Designers Kit · [source](https://github.com/vtex/styleguide)

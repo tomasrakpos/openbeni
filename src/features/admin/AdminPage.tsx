@@ -12,7 +12,6 @@ import {
   Cpu,
   Eye,
   EyeOff,
-  FlaskConical,
   KeyRound,
   Loader2,
   MessageSquare,
@@ -47,7 +46,6 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { PROVIDER_PRESETS } from "@/data/presets";
 import { apiFetch } from "@/lib/api";
-import { devAdminPreview, disableDevAdminPreview } from "@/lib/devAdminMock";
 import { useAdminT } from "@/features/admin/adminStrings";
 import type { KeyHealthReport, ProviderInspectSummary } from "@/lib/providerInspectClient";
 import { formatTokens } from "@/lib/tokens";
@@ -75,6 +73,8 @@ interface AdminProvider {
   enabled: boolean;
   keyCount: number;
   healthyKeys: number;
+  freeModelCount?: number;
+  totalModelCount?: number;
   keys: AdminKey[];
 }
 
@@ -92,7 +92,9 @@ interface AdminModel {
 interface AdminRouter {
   id: string;
   providerId: string | null;
+  providerIds?: string[];
   providerName?: string;
+  providerNames?: string[];
   name: string;
   type: "free";
   enabled: boolean;
@@ -242,28 +244,6 @@ export function AdminPage({ initialDiagnostics }: { initialDiagnostics?: AdminDi
 
       <DiagnosticsStrip initial={initialDiagnostics} />
 
-      {devAdminPreview() ? (
-        <div className="mb-4 flex flex-wrap items-start gap-3 rounded-[14px] border border-[var(--warning)]/35 bg-[var(--warning-soft)] p-3">
-          <FlaskConical className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
-          <div className="min-w-0 flex-1">
-            <p className="text-[12px] font-medium text-[var(--warning)]">{t("admin.previewTitle")}</p>
-            <p className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--muted-foreground)]">
-              {t("admin.previewNote")}
-            </p>
-          </div>
-          <Button
-            size="xs"
-            variant="secondary"
-            onClick={async () => {
-              await disableDevAdminPreview();
-              window.location.assign("/");
-            }}
-          >
-            {t("admin.previewExit")}
-          </Button>
-        </div>
-      ) : null}
-
       <div className="mb-5 flex flex-wrap gap-1 rounded-[13px] border border-[var(--border)] bg-[var(--surface-2)] p-1">        {tabs.map((entry) => (
           <button
             key={entry.id}
@@ -402,6 +382,9 @@ function ProvidersTab() {
   const [form, setForm] = React.useState({ ...EMPTY_PROVIDER_FORM });
   const [selectedPreset, setSelectedPreset] = React.useState("");
   const [creating, setCreating] = React.useState(false);
+  const [multiProviderIds, setMultiProviderIds] = React.useState<string[]>([]);
+  const [multiRouterName, setMultiRouterName] = React.useState("");
+  const [creatingMultiRouter, setCreatingMultiRouter] = React.useState(false);
 
   const loadRouters = React.useCallback(async () => {
     try {
@@ -427,12 +410,14 @@ function ProvidersTab() {
     }
   }, [t]);
 
-  const createRouter = async (providerId: string, name: string): Promise<boolean> => {
-    setBusy(providerId);
+  const createRouter = async (providerIdsInput: string | string[], name: string): Promise<boolean> => {
+    const providerIds = (Array.isArray(providerIdsInput) ? providerIdsInput : [providerIdsInput]).filter(Boolean);
+    if (providerIds.length === 0) return false;
+    setBusy(providerIds.length === 1 ? providerIds[0]! : "multi-router");
     try {
       await apiFetch("/api/admin/routers", {
         method: "POST",
-        body: { providerId, name },
+        body: { providerId: providerIds[0], providerIds, name },
       });
       await loadRouters();
       void refreshPublicRouters();
@@ -443,6 +428,57 @@ function ProvidersTab() {
       return false;
     } finally {
       setBusy(null);
+    }
+  };
+
+  const providerFreeCount = React.useCallback(
+    (provider: AdminProvider): number => {
+      const loaded = models[provider.id];
+      if (loaded) {
+        return loaded.filter((m) => m.upstream_verified && !m.paid && m.pricing === "free").length;
+      }
+      const reportCount = testReports[provider.id]?.summary?.freeCount;
+      if (typeof reportCount === "number") return reportCount;
+      return provider.freeModelCount ?? 0;
+    },
+    [models, testReports],
+  );
+
+  // Drop deleted providers from the multi-provider router selection automatically.
+  React.useEffect(() => {
+    const validIds = new Set(providers.map((p) => p.id));
+    setMultiProviderIds((prev) => {
+      const next = prev.filter((id) => validIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [providers]);
+
+  const toggleMultiProvider = (providerId: string) => {
+    setMultiProviderIds((prev) =>
+      prev.includes(providerId) ? prev.filter((id) => id !== providerId) : [...prev, providerId],
+    );
+  };
+
+  const selectedMultiProviders = React.useMemo(
+    () => providers.filter((p) => multiProviderIds.includes(p.id)),
+    [providers, multiProviderIds],
+  );
+  const selectedMultiFreeTotal = React.useMemo(
+    () => selectedMultiProviders.reduce((sum, p) => sum + providerFreeCount(p), 0),
+    [selectedMultiProviders, providerFreeCount],
+  );
+
+  const submitMultiRouter = async () => {
+    if (creatingMultiRouter || multiProviderIds.length === 0 || selectedMultiFreeTotal === 0) return;
+    setCreatingMultiRouter(true);
+    try {
+      const ok = await createRouter(multiProviderIds, multiRouterName);
+      if (ok) {
+        setMultiRouterName("");
+        setMultiProviderIds([]);
+      }
+    } finally {
+      setCreatingMultiRouter(false);
     }
   };
 
@@ -885,12 +921,187 @@ function ProvidersTab() {
               {t("admin.deleteAllProviders")}
             </Button>
           </div>
+
+          <section className={cn(CARD, "p-4")}>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+                  <Route className="size-4 text-[var(--primary)]" />
+                  {t("admin.routerPoolTitle")}
+                </h2>
+                <p className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">
+                  {t("admin.routerPoolDesc")}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() =>
+                    setMultiProviderIds(
+                      providers.filter((p) => providerFreeCount(p) > 0).map((p) => p.id),
+                    )
+                  }
+                  disabled={providers.every((p) => providerFreeCount(p) === 0)}
+                >
+                  {t("admin.routerSelectAll")}
+                </Button>
+                {multiProviderIds.length > 0 ? (
+                  <Button size="xs" variant="ghost" onClick={() => setMultiProviderIds([])}>
+                    {t("admin.routerClearSelection")}
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <p className="mb-1.5 text-[11px] font-medium text-[var(--muted-foreground)]">
+                {t("admin.routerSelectProviders")}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {providers.map((provider) => {
+                  const count = providerFreeCount(provider);
+                  const selected = multiProviderIds.includes(provider.id);
+                  return (
+                    <button
+                      key={provider.id}
+                      type="button"
+                      onClick={() => toggleMultiProvider(provider.id)}
+                      aria-pressed={selected}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-[8px] border px-2.5 py-1 text-[11.5px] font-medium transition-colors",
+                        selected
+                          ? "border-[var(--primary)] bg-[var(--primary)]/14 text-foreground"
+                          : "border-[var(--border)] bg-[var(--surface-2)]/60 text-[var(--muted-foreground)] hover:text-foreground",
+                        !provider.enabled && "opacity-60",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "grid size-3.5 place-items-center rounded-[4px] border text-[9px]",
+                          selected
+                            ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
+                            : "border-[var(--border)] bg-[var(--surface-1)]",
+                        )}
+                        aria-hidden="true"
+                      >
+                        {selected ? "✓" : ""}
+                      </span>
+                      <span className="max-w-[160px] truncate">{provider.name}</span>
+                      <Badge variant={count > 0 ? "primary" : "unknown"} className="text-[9.5px]">
+                        {count}
+                      </Badge>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] text-[var(--muted-foreground)]">
+                  {multiProviderIds.length > 0
+                    ? t("admin.routerSelectedSummary", {
+                        models: selectedMultiFreeTotal,
+                        providers: multiProviderIds.length,
+                      })
+                    : t("admin.routerNoSelection")}
+                </p>
+              </div>
+
+              <div className="mt-2 flex items-center gap-1.5">
+                <Input
+                  value={multiRouterName}
+                  onChange={(event) => setMultiRouterName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void submitMultiRouter();
+                  }}
+                  placeholder={t("admin.routerNamePlaceholder")}
+                  maxLength={32}
+                  disabled={creatingMultiRouter || multiProviderIds.length === 0 || selectedMultiFreeTotal === 0}
+                  className="h-8 flex-1 text-[12px]"
+                />
+                <Button
+                  size="sm"
+                  disabled={
+                    creatingMultiRouter ||
+                    multiProviderIds.length === 0 ||
+                    selectedMultiFreeTotal === 0 ||
+                    multiRouterName.trim().length < 2
+                  }
+                  onClick={() => void submitMultiRouter()}
+                >
+                  {creatingMultiRouter ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Route className="size-3.5" />
+                  )}
+                  {t("admin.routerCreate")}
+                </Button>
+              </div>
+              <p className="mt-1.5 text-[10.5px] text-[var(--faint)]">{t("admin.routerHiddenHint")}</p>
+            </div>
+
+            {routers.length > 0 ? (
+              <ul className="mt-3 flex flex-col gap-1.5 border-t border-[var(--border)] pt-3">
+                {routers.map((router) => {
+                  const pNames =
+                    router.providerNames && router.providerNames.length > 0
+                      ? router.providerNames
+                      : router.providerName
+                        ? [router.providerName]
+                        : [];
+                  return (
+                    <li
+                      key={router.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-[var(--border)] bg-[var(--surface-2)]/50 px-2.5 py-2 text-[11.5px]"
+                    >
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <Route className="size-3.5 shrink-0 text-[var(--primary)]" />
+                        <span className="truncate font-semibold">{router.name}</span>
+                        <Badge variant="primary" className="text-[9.5px]">
+                          {router.activeMemberCount > 0
+                            ? t("admin.routerActiveCount", { n: router.activeMemberCount })
+                            : t("admin.routerEmpty")}
+                        </Badge>
+                        {pNames.map((pname) => (
+                          <Badge key={pname} variant="unknown" className="text-[9.5px]">
+                            {pname}
+                          </Badge>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={router.enabled}
+                          onCheckedChange={() => void toggleRouter(router)}
+                          disabled={busy === (router.providerId ?? router.id)}
+                          aria-label={router.enabled ? t("admin.enabled") : t("admin.disabled")}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void deleteRouter(router)}
+                          disabled={busy === (router.providerId ?? router.id)}
+                          className="text-[var(--faint)] transition-colors hover:text-[var(--destructive)]"
+                          aria-label={t("common.delete")}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+          </section>
+
           {providers.map((provider) => (
             <ProviderCard
               key={provider.id}
               provider={provider}
               models={models[provider.id]}
-              routers={routers.filter((r) => r.providerId === provider.id)}
+              routers={routers.filter(
+                (r) =>
+                  r.providerId === provider.id ||
+                  (Array.isArray(r.providerIds) && r.providerIds.includes(provider.id)),
+              )}
               report={testReports[provider.id]}
               busy={busy === provider.id}
               testing={testing === provider.id}
@@ -907,7 +1118,7 @@ function ProvidersTab() {
               onSetModelVisibility={(model, state) => void setModelVisibility(provider.id, model, state)}
               onBulkModels={(action) => void bulkModels(provider.id, action)}
               onRenameModel={(model, name) => void renameModel(provider.id, model, name)}
-              onCreateRouter={(name) => createRouter(provider.id, name)}
+              onCreateRouter={(name) => createRouter([provider.id], name)}
               onToggleRouter={(router) => void toggleRouter(router)}
               onDeleteRouter={(router) => void deleteRouter(router)}
             />
@@ -968,6 +1179,10 @@ function ProviderCard({
   const freeModelsCount = models
     ? models.filter((m) => m.enabled && !m.paid && m.pricing === "free").length
     : (report?.summary?.freeCount ?? 0);
+  // Admin free routers stay active on verified free models even when hidden from the public model list.
+  const routerFreeModelsCount = models
+    ? models.filter((m) => m.upstream_verified && !m.paid && m.pricing === "free").length
+    : (report?.summary?.freeCount ?? provider.freeModelCount ?? 0);
   const paidModelsCount = models
     ? models.filter((m) => m.enabled && (m.paid || m.pricing === "paid")).length
     : (report?.summary?.paidCount ?? 0);
@@ -985,7 +1200,7 @@ function ProviderCard({
   }, [models, tierFilter, modelSearch]);
 
   const submitRouter = async () => {
-    if (creatingRouter || freeModelsCount === 0) return;
+    if (creatingRouter || routerFreeModelsCount === 0) return;
     setCreatingRouter(true);
     try {
       const ok = await onCreateRouter(routerName);
@@ -1377,12 +1592,15 @@ function ProviderCard({
                   <Route className="size-3.5 text-[var(--primary)]" />
                   <span>{t("admin.routerCreateFromFree")}</span>
                   <Badge variant="unknown" className="text-[9.5px]">
-                    {t("admin.routerActiveCount", { n: freeModelsCount })}
+                    {t("admin.routerActiveCount", { n: routerFreeModelsCount })}
                   </Badge>
                 </div>
               </div>
+              <p className="mt-1 text-[10.5px] text-[var(--muted-foreground)]">
+                {t("admin.routerHiddenHint")}
+              </p>
 
-              {freeModelsCount === 0 ? (
+              {routerFreeModelsCount === 0 ? (
                 <p className="mt-1.5 text-[11px] text-[var(--muted-foreground)]">
                   {t("admin.routerNoFreeModels")}
                 </p>

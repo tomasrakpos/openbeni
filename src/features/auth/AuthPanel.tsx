@@ -2,7 +2,6 @@
 import { Check, Coins, Copy, KeyRound, Loader2, LogOut, Plus, Trash2, UserRound } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -26,7 +25,6 @@ export function AuthPanel() {
   const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
 
   const signedIn = useAuthStore((s) => s.signedIn);
-  const devMockSession = useAuthStore((s) => s.devMockSession);
   const profile = useAuthStore((s) => s.profile);
   const tokens = useAuthStore((s) => s.tokens);
   const tokensLoading = useAuthStore((s) => s.tokensLoading);
@@ -115,11 +113,6 @@ export function AuthPanel() {
                   <p className="truncate text-[13.5px] font-semibold">{profile.displayName}</p>
                   <p className="truncate text-[11.5px] text-[var(--faint)]">{profile.email}</p>
                 </div>
-                {devMockSession ? (
-                  <Badge variant="accent" className="shrink-0 text-[10px]">
-                    {t("auth.devPreviewBadge")}
-                  </Badge>
-                ) : null}
               </div>
 
               <div className="mt-4 rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)]/70 p-3">

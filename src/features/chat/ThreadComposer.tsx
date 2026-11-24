@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { buildComposerModels, resolveComposerModelId } from "@/features/chat/modelOptions";
 import { IntelligencePicker } from "@/features/chat/IntelligencePicker";
 import { SkillPicker } from "@/features/chat/SkillPicker";
-import { useVoiceInput } from "@/features/chat/useVoiceInput";
+import { useVoiceInput, voiceErrorI18nKey } from "@/features/chat/useVoiceInput";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ChatParams } from "@/lib/types";
@@ -71,12 +71,9 @@ export function ThreadComposer() {
 
   const voice = useVoiceInput({
     lang,
-    onTranscript: (transcript, final) => {
-      if (final) {
-        setText((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${transcript}`);
-      }
-    },
-    onError: () => toast.error(t("chat.voiceUnsupported")),
+    value: text,
+    onChange: setText,
+    onError: (code) => toast.error(t(voiceErrorI18nKey(code))),
   });
 
   const handleFiles = async (files: File[]) => {
@@ -109,6 +106,7 @@ export function ThreadComposer() {
   };
 
   const handleSubmit = async ({ prompt, modelId }: { prompt: string; modelId: string }) => {
+    if (voice.listening) voice.stop({ commit: false });
     if (!useAuthStore.getState().signedIn) {
       setAuthGateOpen(true);
       return;
@@ -140,12 +138,12 @@ export function ThreadComposer() {
         <GlassButton
           variant="icon"
           active={voice.listening}
-          onClick={() => (voice.listening ? voice.stop() : voice.start())}
-          disabled={!voice.supported}
-          aria-label={voice.listening ? t("chat.listening") : t("chat.voice")}
+          onClick={voice.toggle}
+          aria-label={voice.listening ? t("chat.voiceStop") : t("chat.voice")}
           aria-pressed={voice.listening}
           className={cn(
             voice.listening && "!text-[var(--destructive)]",
+            !voice.supported && "opacity-60",
           )}
         >
           {voice.listening ? (
@@ -154,11 +152,20 @@ export function ThreadComposer() {
             <Mic size={14} strokeWidth={1.75} aria-hidden="true" />
           )}
           {voice.listening && (
-            <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-[var(--destructive)]" aria-hidden="true" />
+            <span className="pointer-events-none absolute right-1.5 top-1.5 flex size-1.5" aria-hidden="true">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--destructive)] opacity-75" />
+              <span className="relative inline-flex size-1.5 rounded-full bg-[var(--destructive)]" />
+            </span>
           )}
         </GlassButton>
       </TooltipTrigger>
-      <TooltipContent>{voice.supported ? t("chat.voice") : t("chat.voiceUnsupported")}</TooltipContent>
+      <TooltipContent>
+        {voice.listening
+          ? t("chat.listening")
+          : voice.supported
+            ? t("chat.voice")
+            : t("chat.voiceUnsupported")}
+      </TooltipContent>
     </Tooltip>
   );
 

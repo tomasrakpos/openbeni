@@ -1,8 +1,8 @@
 // Shared logic types; change this helper here and update callers if its contract changes.
 export type ApiFormat = "openai" | "anthropic" | "gemini" | "custom";
 
-export type SkillId = "chat" | "web_builder" | "game_builder" | "deep_research";
-export type SkillMode = "auto" | SkillId;
+export type SkillId = "website" | "game" | "chat" | "deep_thinking" | "other";
+export type SkillMode = "auto" | "website" | "game" | "chat" | "deep_thinking";
 export type AuthStyle = "bearer" | "raw" | "query" | "none";
 export type Capability = "text" | "vision" | "video" | "audio" | "tools" | "reasoning";
 export type Tier = "free" | "paid" | "unknown";
@@ -175,6 +175,27 @@ export interface MessageStats {
   finishReason?: string;
 }
 
+export interface ElementEditFileSnapshot {
+  path: string;
+  language: string;
+  content: string;
+}
+
+export interface ElementEditContext {
+  /** Compact human-readable element label shown as a tag chip in chat (never raw HTML). */
+  label: string;
+  /** Exact CSS selector inside the preview document. */
+  selector: string;
+  /** HTML tag name (e.g. button, a, h1). */
+  tag?: string;
+  /** Short visible text inside the selected element. */
+  text?: string;
+  /** Target element outerHTML sent ONLY to the model/backend (never shown in chat). */
+  outerHtml?: string;
+  /** Full snapshot of the current preview project files sent ONLY to the model/backend. */
+  projectFiles?: ElementEditFileSnapshot[];
+}
+
 export interface Message {
   id: string;
   chatId: string;
@@ -183,8 +204,12 @@ export interface Message {
   reasoning?: string;
   parentId: string | null;
   attachments: string[];
+  /** Hidden structured context for AI preview element edits (rendered only as a compact tag in chat). */
+  editContext?: ElementEditContext;
   providerId?: string;
   modelId?: string;
+  /** Optional friendly display name preserved for native OpenHarneks router replies. */
+  modelDisplayName?: string;
   /** Backend skill that handled this assistant turn. */
   skillId?: SkillId;
   /** Number of live web/image sources fetched by the backend skill. */

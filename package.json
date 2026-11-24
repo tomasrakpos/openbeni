@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "skills:sync": "node scripts/sync-skills-index.mjs",
+    "build": "node scripts/sync-skills-index.mjs && tsc -b && vite build",
     "typecheck": "tsc -b --noEmit",
     "preview": "vite preview",
     "test": "vitest run",

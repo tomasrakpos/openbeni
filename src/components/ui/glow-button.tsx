@@ -1,6 +1,7 @@
 // Reusable UI primitive glow-button; adjust its default appearance and behavior here.
 import * as React from "react";
 import { Loader2 } from "lucide-react";
+import { useJellyStretch } from "@/lib/useJellyStretch";
 import { cn } from "@/lib/utils";
 
 type GlowButtonVariant = "default" | "secondary" | "ghost";
@@ -10,6 +11,7 @@ export interface GlowButtonProps extends React.ButtonHTMLAttributes<HTMLButtonEl
   variant?: GlowButtonVariant;
   size?: GlowButtonSize;
   loading?: boolean;
+  icon?: React.ReactNode;
 }
 
 const variants: Record<GlowButtonVariant, string> = {
@@ -26,27 +28,32 @@ const sizes: Record<GlowButtonSize, string> = {
 };
 
 export const GlowButton = React.forwardRef<HTMLButtonElement, GlowButtonProps>(
-  ({ className, variant = "default", size = "default", loading, disabled, children, type, ...props }, ref) => (
-    <button
-      ref={ref}
-      type={type ?? "button"}
-      className={cn(
-        "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[12px] font-medium select-none",
-        "transition-[background,color,box-shadow,transform,border-color] duration-200 ease-out",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-        "active:scale-[0.985] disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0",
-        variants[variant],
-        sizes[size],
-        className,
-      )}
-      disabled={disabled || loading}
-      aria-busy={loading || undefined}
-      {...props}
-    >
-      {loading ? <Loader2 className="animate-spin" /> : null}
-      {children}
-    </button>
-  ),
+  ({ className, variant = "default", size = "default", loading, icon, disabled, children, type, ...props }, ref) => {
+    const jellyRef = useJellyStretch<HTMLButtonElement>(ref, {
+      enabled: !(disabled || loading),
+    });
+    return (
+      <button
+        ref={jellyRef}
+        type={type ?? "button"}
+        className={cn(
+          "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[12px] font-medium select-none",
+          "transition-[background,color,box-shadow,transform,border-color] duration-200 ease-out",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
+          "disabled:pointer-events-none disabled:opacity-45 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+          variants[variant],
+          sizes[size],
+          className,
+        )}
+        disabled={disabled || loading}
+        aria-busy={loading || undefined}
+        {...props}
+      >
+        {loading ? <Loader2 className="animate-spin" /> : icon ? icon : null}
+        {children}
+      </button>
+    );
+  },
 );
 GlowButton.displayName = "GlowButton";
 

@@ -13,21 +13,27 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ClipboardCheck,
   Code2,
   CopyPlus,
   CornerLeftUp,
   Eye,
   EyeOff,
+  Image as ImageIcon,
   Italic,
   Layers,
+  Link2,
   Minus,
+  Paintbrush,
   PencilRuler,
   Plus,
+  Redo2,
   RotateCcw,
   Sparkles,
   Strikethrough,
   Trash2,
   Underline,
+  Undo2,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -48,6 +54,7 @@ import type {
   FillModeKind,
   FlexDirKind,
   JustifyKind,
+  ObjectFitKind,
   OverflowKind,
   SelectedElementInfo,
   ShadowPreset,
@@ -72,6 +79,7 @@ type ActiveColorTarget =
       kind: "bg" | "text" | "border" | "gradFrom" | "gradTo";
       title: string;
       initial: string;
+      prevFillMode?: FillModeKind;
       allowTransparent?: boolean;
     };
 
@@ -343,12 +351,16 @@ export const AiElementPromptPopover = React.memo(function AiElementPromptPopover
   element,
   submitting,
   onSubmit,
+  onSelectParent,
+  onSwitchToManual,
   onClose,
 }: {
   element: SelectedElementInfo;
   containerSize?: { w: number; h: number };
   submitting: boolean;
   onSubmit: (instruction: string) => void;
+  onSelectParent?: () => void;
+  onSwitchToManual?: () => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -357,6 +369,13 @@ export const AiElementPromptPopover = React.memo(function AiElementPromptPopover
 
   React.useEffect(() => {
     setPrompt("");
+    // Auto-focus on pointer/desktop devices only so mobile virtual keyboards do not
+    // immediately cover the preview before the user confirms the tapped element.
+    const finePointer =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: fine)").matches;
+    if (!finePointer) return;
     const id = window.setTimeout(() => textareaRef.current?.focus(), 60);
     return () => window.clearTimeout(id);
   }, [element.selectionKey]);
@@ -378,7 +397,7 @@ export const AiElementPromptPopover = React.memo(function AiElementPromptPopover
       className="shrink-0 overflow-hidden px-2 pb-2"
     >
       <MenuFrame style={{ "--hl": 0.9 } as React.CSSProperties}>
-        <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+        <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-3 py-2">
           <span className="grid size-6 shrink-0 place-items-center rounded-[8px] bg-[var(--primary-soft)] text-[var(--primary)]">
             <WandSparkles className="size-3.5" />
           </span>
@@ -392,11 +411,34 @@ export const AiElementPromptPopover = React.memo(function AiElementPromptPopover
               </span>
             ) : null}
           </div>
+          {element.styles.hasParent && onSelectParent ? (
+            <button
+              type="button"
+              onClick={onSelectParent}
+              aria-label={t("preview.studio.selectParent")}
+              title={t("preview.studio.selectParent")}
+              className="grid size-7 shrink-0 place-items-center rounded-[7px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
+            >
+              <CornerLeftUp className="size-3.5" />
+            </button>
+          ) : null}
+          {onSwitchToManual ? (
+            <button
+              type="button"
+              onClick={onSwitchToManual}
+              aria-label={t("preview.studio.manualEdit")}
+              title={t("preview.studio.manualEdit")}
+              className="inline-flex h-7 shrink-0 items-center gap-1 rounded-[7px] border border-[var(--border)] bg-[var(--surface-2)]/70 px-2 text-[10px] font-medium text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]/40 hover:text-foreground"
+            >
+              <PencilRuler className="size-3" />
+              <span>{t("preview.studio.manualEdit")}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
             aria-label={t("common.close")}
-            className="grid size-6 shrink-0 place-items-center rounded-[7px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
+            className="grid size-7 shrink-0 place-items-center rounded-[7px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
           >
             <X className="size-3.5" />
           </button>
@@ -457,6 +499,16 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
   onDelete,
   onSave,
   onClose,
+  canUndo = false,
+  canRedo = false,
+  hasUnsavedChanges = false,
+  saving = false,
+  onUndo,
+  onRedo,
+  copiedStyle = null,
+  onCopyStyle,
+  onPasteStyle,
+  onSwitchToAi,
 }: {
   element: SelectedElementInfo;
   containerSize?: { w: number; h: number };
@@ -469,6 +521,16 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
   onDelete: () => void;
   onSave: () => void;
   onClose: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  hasUnsavedChanges?: boolean;
+  saving?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  copiedStyle?: ElementStylePatch | null;
+  onCopyStyle?: (style: ElementStylePatch) => void;
+  onPasteStyle?: () => void;
+  onSwitchToAi?: () => void;
 }) {
   const t = useT();
   const [expanded, setExpanded] = React.useState(false);
@@ -476,6 +538,11 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
   const [codeStudioOpen, setCodeStudioOpen] = React.useState(false);
 
   const [text, setText] = React.useState(element.text);
+  const [imgSrc, setImgSrc] = React.useState(element.imgSrc ?? "");
+  const [imgAlt, setImgAlt] = React.useState(element.imgAlt ?? "");
+  const [objectFit, setObjectFit] = React.useState<ObjectFitKind>(element.styles.objectFit ?? "cover");
+  const [href, setHref] = React.useState(element.href ?? "");
+  const [targetBlank, setTargetBlank] = React.useState(Boolean(element.targetBlank));
   const [align, setAlign] = React.useState<"left" | "center" | "right">(element.styles.align);
   const [dir, setDir] = React.useState<DirKind>(element.styles.dir);
   const [displayMode, setDisplayMode] = React.useState<DisplayModeKind>(element.styles.displayMode);
@@ -547,6 +614,11 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
     setColorPicker(null);
     setCodeStudioOpen(false);
     setText(element.text);
+    setImgSrc(element.imgSrc ?? "");
+    setImgAlt(element.imgAlt ?? "");
+    setObjectFit(element.styles.objectFit ?? "cover");
+    setHref(element.href ?? "");
+    setTargetBlank(Boolean(element.targetBlank));
     setAlign(element.styles.align);
     setDir(element.styles.dir);
     setDisplayMode(element.styles.displayMode);
@@ -612,6 +684,34 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [element.selectionKey]);
 
+  // Live sync when inline text edit or arrow-key nudge updates the same selected element
+  React.useEffect(() => {
+    setText(element.text);
+    setOffsetX(element.styles.offsetX);
+    setOffsetY(element.styles.offsetY);
+    setWidthPx(element.styles.widthPx);
+    setHeightPx(element.styles.heightPx);
+  }, [element.text, element.styles.offsetX, element.styles.offsetY, element.styles.widthPx, element.styles.heightPx]);
+
+  // Step-by-step Escape: close sub-studios before letting parent close inspector
+  React.useEffect(() => {
+    if (!codeStudioOpen && !colorPicker) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (codeStudioOpen) {
+        setCodeStudioOpen(false);
+      } else if (colorPicker) {
+        cancelColorTarget(colorPicker);
+        setColorPicker(null);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codeStudioOpen, colorPicker]);
+
   const emit = React.useCallback(
     (patch: ElementStylePatch) => {
       setDirty(true);
@@ -619,6 +719,76 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
     },
     [onPatch],
   );
+
+  const buildCopyableStylePatch = React.useCallback((): ElementStylePatch => {
+    return {
+      fillMode,
+      backgroundColor: bgColor,
+      gradientFrom: gradFrom,
+      gradientTo: gradTo,
+      gradientAngle: gradAngle,
+      color: textColor,
+      fontSizePx: fontSize,
+      fontWeight,
+      lineHeight,
+      letterSpacingPx: letterSpacing,
+      italic,
+      underline,
+      strikethrough,
+      textTransform,
+      textShadow,
+      borderRadiusPx: radius,
+      borderWidthPx: borderWidth,
+      borderStyle,
+      borderColor,
+      paddingX,
+      paddingY,
+      opacityPct,
+      shadowPreset,
+      backdropBlurPx: backdropBlur,
+    };
+  }, [
+    fillMode,
+    bgColor,
+    gradFrom,
+    gradTo,
+    gradAngle,
+    textColor,
+    fontSize,
+    fontWeight,
+    lineHeight,
+    letterSpacing,
+    italic,
+    underline,
+    strikethrough,
+    textTransform,
+    textShadow,
+    radius,
+    borderWidth,
+    borderStyle,
+    borderColor,
+    paddingX,
+    paddingY,
+    opacityPct,
+    shadowPreset,
+    backdropBlur,
+  ]);
+
+  const cancelColorTarget = (target: NonNullable<ActiveColorTarget>) => {
+    if (target.kind === "bg" && target.prevFillMode) {
+      setFillMode(target.prevFillMode);
+      if (target.prevFillMode === "gradient") {
+        emit({ fillMode: "gradient", gradientFrom: gradFrom, gradientTo: gradTo, gradientAngle: gradAngle });
+        return;
+      }
+      if (target.prevFillMode === "transparent") {
+        setBgColor("transparent");
+        emit({ fillMode: "transparent", backgroundColor: "transparent" });
+        return;
+      }
+    }
+    applyColorTarget(target, target.initial);
+  };
 
   const applyColorTarget = (target: NonNullable<ActiveColorTarget>, cssColor: string) => {
     if (target.kind === "bg") {
@@ -693,7 +863,7 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
                 setColorPicker(null);
               }}
               onCancel={() => {
-                applyColorTarget(colorPicker, colorPicker.initial);
+                cancelColorTarget(colorPicker);
                 setColorPicker(null);
               }}
             />
@@ -707,13 +877,77 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
               className="flex min-h-0 flex-1 flex-col overflow-hidden"
             >
               {/* Sticky Header */}
-              <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--border)] px-3 py-2">
+              <div className="flex shrink-0 items-center gap-1 border-b border-[var(--border)] px-2.5 py-2">
                 <span className="grid size-6 shrink-0 place-items-center rounded-[8px] bg-[var(--primary-soft)] text-[var(--primary)]">
                   <PencilRuler className="size-3.5" />
                 </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] font-semibold text-foreground">
-                  {element.label}
-                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate font-mono text-[10.5px] font-semibold text-foreground">
+                      {element.label}
+                    </span>
+                    <span className="shrink-0 rounded-[5px] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[9px] text-[var(--muted-foreground)] tabular-nums">
+                      {Math.round(element.styles.widthPx)}×{Math.round(element.styles.heightPx)}
+                    </span>
+                  </div>
+                </div>
+                {onUndo ? (
+                  <button
+                    type="button"
+                    onClick={onUndo}
+                    disabled={!canUndo}
+                    aria-label={t("preview.studio.undo")}
+                    title={`${t("preview.studio.undo")} (Ctrl+Z)`}
+                    className="grid size-6 shrink-0 place-items-center rounded-[7px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+                  >
+                    <Undo2 className="size-3.5" />
+                  </button>
+                ) : null}
+                {onRedo ? (
+                  <button
+                    type="button"
+                    onClick={onRedo}
+                    disabled={!canRedo}
+                    aria-label={t("preview.studio.redo")}
+                    title={`${t("preview.studio.redo")} (Ctrl+Shift+Z)`}
+                    className="grid size-6 shrink-0 place-items-center rounded-[7px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+                  >
+                    <Redo2 className="size-3.5" />
+                  </button>
+                ) : null}
+                {onCopyStyle ? (
+                  <button
+                    type="button"
+                    onClick={() => onCopyStyle(buildCopyableStylePatch())}
+                    aria-label={t("preview.studio.copyStyle")}
+                    title={t("preview.studio.copyStyle")}
+                    className="grid size-6 shrink-0 place-items-center rounded-[7px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--surface-2)] hover:text-foreground"
+                  >
+                    <Paintbrush className="size-3" />
+                  </button>
+                ) : null}
+                {onPasteStyle && copiedStyle ? (
+                  <button
+                    type="button"
+                    onClick={onPasteStyle}
+                    aria-label={t("preview.studio.pasteStyle")}
+                    title={t("preview.studio.pasteStyle")}
+                    className="grid size-6 shrink-0 place-items-center rounded-[7px] bg-[var(--primary-soft)] text-[var(--primary)] transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_22%,transparent)]"
+                  >
+                    <ClipboardCheck className="size-3.5" />
+                  </button>
+                ) : null}
+                {onSwitchToAi ? (
+                  <button
+                    type="button"
+                    onClick={onSwitchToAi}
+                    aria-label={t("preview.studio.aiEdit")}
+                    title={t("preview.studio.aiEdit")}
+                    className="grid size-6 shrink-0 place-items-center rounded-[7px] text-[var(--primary)] transition-colors hover:bg-[var(--primary-soft)]"
+                  >
+                    <WandSparkles className="size-3.5" />
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setCodeStudioOpen(true)}
@@ -760,6 +994,9 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
               >
                 {/* 1. Content & Layer Actions */}
                 <StudioSectionCard title={t("preview.studio.secContent")}>
+                  <p className="text-[9.5px] leading-snug text-[var(--faint)]">
+                    {t("preview.studio.inlineEditHint")}
+                  </p>
                   {element.hasEditableText ? (
                     <label className="block space-y-1">
                       <span className="block text-[10px] font-medium text-[var(--muted-foreground)]">
@@ -776,6 +1013,96 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
                         className="h-8 w-full rounded-[10px] border border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_80%,transparent)] px-2.5 text-[12px] text-foreground outline-none focus:border-[var(--primary)]"
                       />
                     </label>
+                  ) : null}
+
+                  {element.tag === "img" ? (
+                    <div className="space-y-2">
+                      <label className="block space-y-1">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--muted-foreground)]">
+                          <ImageIcon className="size-3" />
+                          {t("preview.studio.fieldImgSrc")}
+                        </span>
+                        <input
+                          type="url"
+                          dir="ltr"
+                          value={imgSrc}
+                          onChange={(e) => {
+                            setImgSrc(e.target.value);
+                            emit({ imgSrc: e.target.value });
+                          }}
+                          placeholder="https://…"
+                          className="h-8 w-full rounded-[10px] border border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_80%,transparent)] px-2.5 font-mono text-[11px] text-foreground outline-none focus:border-[var(--primary)]"
+                        />
+                      </label>
+                      <label className="block space-y-1">
+                        <span className="block text-[10px] font-medium text-[var(--muted-foreground)]">
+                          {t("preview.studio.fieldImgAlt")}
+                        </span>
+                        <input
+                          type="text"
+                          dir="auto"
+                          value={imgAlt}
+                          onChange={(e) => {
+                            setImgAlt(e.target.value);
+                            emit({ imgAlt: e.target.value });
+                          }}
+                          className="h-8 w-full rounded-[10px] border border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_80%,transparent)] px-2.5 text-[11.5px] text-foreground outline-none focus:border-[var(--primary)]"
+                        />
+                      </label>
+                      <div className="space-y-1">
+                        <span className="block text-[10px] font-medium text-[var(--muted-foreground)]">
+                          {t("preview.studio.fieldObjectFit")}
+                        </span>
+                        <Tabs
+                          value={objectFit}
+                          onValueChange={(v) => {
+                            const next = v as ObjectFitKind;
+                            setObjectFit(next);
+                            emit({ objectFit: next });
+                          }}
+                        >
+                          <TabsList className="w-full">
+                            <TabsTrigger value="cover" className="flex-1 text-[10px]">Cover</TabsTrigger>
+                            <TabsTrigger value="contain" className="flex-1 text-[10px]">Contain</TabsTrigger>
+                            <TabsTrigger value="fill" className="flex-1 text-[10px]">Fill</TabsTrigger>
+                          </TabsList>
+                        </Tabs>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {element.tag === "a" ? (
+                    <div className="space-y-2">
+                      <label className="block space-y-1">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--muted-foreground)]">
+                          <Link2 className="size-3" />
+                          {t("preview.studio.fieldHref")}
+                        </span>
+                        <input
+                          type="text"
+                          dir="ltr"
+                          value={href}
+                          onChange={(e) => {
+                            setHref(e.target.value);
+                            emit({ href: e.target.value });
+                          }}
+                          placeholder="https://… or #section"
+                          className="h-8 w-full rounded-[10px] border border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_80%,transparent)] px-2.5 font-mono text-[11px] text-foreground outline-none focus:border-[var(--primary)]"
+                        />
+                      </label>
+                      <label className="inline-flex cursor-pointer items-center gap-2 text-[10.5px] text-[var(--muted-foreground)]">
+                        <input
+                          type="checkbox"
+                          checked={targetBlank}
+                          onChange={(e) => {
+                            setTargetBlank(e.target.checked);
+                            emit({ targetBlank: e.target.checked });
+                          }}
+                          className="size-3.5 accent-[var(--primary)]"
+                        />
+                        <span>{t("preview.studio.fieldTargetBlank")}</span>
+                      </label>
+                    </div>
                   ) : null}
 
                   <div className="space-y-1">
@@ -1601,6 +1928,7 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
                           kind: "bg",
                           title: t("preview.studio.fieldBgColor"),
                           initial: fillMode === "transparent" ? "transparent" : bgColor,
+                          prevFillMode: fillMode,
                           allowTransparent: true,
                         })
                       }
@@ -1855,10 +2183,23 @@ export const ManualElementInspectorPopover = React.memo(function ManualElementIn
                     <Trash2 className="size-3.5" />
                   </button>
                 </div>
-                <GlassButton variant="pill" active={dirty} onClick={onSave}>
-                  <Check className="size-3.5" />
-                  <span>{t("preview.studio.save")}</span>
-                </GlassButton>
+                <div className="flex items-center gap-2">
+                  {hasUnsavedChanges || dirty ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[var(--primary-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
+                      <span className="size-1.5 rounded-full bg-[var(--primary)]" />
+                      {t("preview.studio.unsaved")}
+                    </span>
+                  ) : null}
+                  <GlassButton
+                    variant="pill"
+                    active={hasUnsavedChanges || dirty}
+                    disabled={saving}
+                    onClick={onSave}
+                  >
+                    <Check className="size-3.5" />
+                    <span>{t("preview.studio.save")}</span>
+                  </GlassButton>
+                </div>
               </div>
             </motion.div>
           )}

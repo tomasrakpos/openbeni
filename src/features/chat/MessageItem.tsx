@@ -1,4 +1,5 @@
 // chat feature: MessageItem; change its UI/flow here and keep related state/API calls in sync.
+import "@/styles/jetbrains-mono.css";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   AlertTriangle,
@@ -11,6 +12,8 @@ import {
   FileText,
   Pencil,
   RefreshCw,
+  Route,
+  Sparkles,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -19,10 +22,12 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { OpenHarneksModelIcon } from "@/components/Logo";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MenuFrame } from "@/components/ui/menu-frame";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useJellyStretch } from "@/lib/useJellyStretch";
 import { ArtifactCard } from "@/features/chat/ArtifactCard";
 import { Markdown } from "@/features/chat/Markdown";
 import { SkillIcon } from "@/features/chat/SkillPicker";
@@ -33,10 +38,17 @@ import { errorHint } from "@/lib/http";
 import { copyToClipboard } from "@/lib/export";
 import { providerDisplayName } from "@/lib/bundled";
 import { useT } from "@/lib/i18n";
+import { containsPersianOrArabic, ensurePersianFont } from "@/lib/loadPersianFont";
 import { formatRelativeTime } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { useChatsStore, type StreamingState } from "@/stores/chats";
 import { useAllModels, useAllProviders } from "@/stores/catalog";
+import {
+  isAdminPublicRouter,
+  isRouterSelectionId,
+  parseRouterSelectionId,
+  useRoutersStore,
+} from "@/stores/routers";
 import { useSettingsStore } from "@/stores/settings";
 import type { Attachment, Message } from "@/lib/types";
 import { useObjectUrl } from "@/components/ModelIdentity";
@@ -56,10 +68,16 @@ function IconButton({
   active?: "up" | "down";
   disabled?: boolean;
 }) {
+  const jellyRef = useJellyStretch<HTMLButtonElement>(undefined, {
+    bounce: 0.65,
+    dragReachX: 14,
+    dragReachY: 10,
+  });
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
+          ref={jellyRef}
           type="button"
           onClick={onClick}
           disabled={disabled}
@@ -191,6 +209,8 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
   const showReasoning = useSettingsStore((s) => s.settings.showReasoning);
   const providers = useAllProviders();
   const models = useAllModels();
+  const publicRouters = useRoutersStore((s) => s.publicRouters);
+  const localRouters = useRoutersStore((s) => s.localRouters);
   const attachments = useChatsStore((s) => s.attachments);
   const chatPreviewEnabled = useChatsStore(
     (s) => s.chats.find((c) => c.id === message.chatId)?.previewEnabled === true,
@@ -211,22 +231,56 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
     setFeedback(readFeedback(message.id));
   }, [message.id]);
 
+  React.useEffect(() => {
+    if (containsPersianOrArabic(message.content) || containsPersianOrArabic(message.reasoning)) {
+      ensurePersianFont();
+    }
+  }, [message.content, message.reasoning]);
+
   const toggleFeedback = (kind: "up" | "down") => {
     const next = feedback === kind ? null : kind;
     setFeedback(next);
     writeFeedback(message.id, next);
   };
 
-  const provider = providers.find((p) => p.id === message.providerId);
+  const routerId =
+    message.modelId && isRouterSelectionId(message.modelId)
+      ? parseRouterSelectionId(message.modelId)
+      : null;
+  const matchedPublicRouter = routerId
+    ? publicRouters.find((r) => r.id === routerId)
+    : undefined;
+  const matchedLocalRouter = routerId
+    ? localRouters.find((r) => r.id === routerId)
+    : undefined;
+  const isAdminNativeRouterMsg =
+    Boolean(matchedPublicRouter && isAdminPublicRouter(matchedPublicRouter)) ||
+    (message.providerId === "router" && Boolean(routerId) && !matchedLocalRouter && !matchedPublicRouter);
+  const isUserRouterMsg =
+    Boolean(matchedLocalRouter) ||
+    Boolean(matchedPublicRouter && !isAdminPublicRouter(matchedPublicRouter));
+
+  const provider = isAdminNativeRouterMsg || isUserRouterMsg
+    ? undefined
+    : providers.find((p) => p.id === message.providerId);
   // Messages store the provider-side model id, but older/imported rows may hold
   // the local row id, so accept either before falling back to the raw value.
-  const model =
-    models.find((m) => m.id === message.modelId && (!message.providerId || m.providerId === message.providerId)) ??
-    models.find((m) => m.modelId === message.modelId && (!message.providerId || m.providerId === message.providerId)) ??
-    models.find((m) => m.id === message.modelId) ??
-    models.find((m) => m.modelId === message.modelId);
-  const providerName = provider ? providerDisplayName(provider) : t("chat.assistant");
-  const modelName = model?.displayName ?? message.modelId ?? "";
+  const model = isAdminNativeRouterMsg || isUserRouterMsg
+    ? undefined
+    : (models.find((m) => m.id === message.modelId && (!message.providerId || m.providerId === message.providerId)) ??
+      models.find((m) => m.modelId === message.modelId && (!message.providerId || m.providerId === message.providerId)) ??
+      models.find((m) => m.id === message.modelId) ??
+      models.find((m) => m.modelId === message.modelId));
+  const providerName = isAdminNativeRouterMsg
+    ? "OpenHarneks"
+    : provider
+      ? providerDisplayName(provider)
+      : t("chat.assistant");
+  const modelName = isAdminNativeRouterMsg
+    ? (matchedPublicRouter?.name ?? message.modelDisplayName ?? "OpenHarneks")
+    : isUserRouterMsg
+      ? (matchedLocalRouter?.name ?? matchedPublicRouter?.name ?? message.modelDisplayName ?? t("router.badge"))
+      : (model?.displayName ?? message.modelDisplayName ?? message.modelId ?? "");
 
   const content = isStreaming ? streaming?.content ?? "" : message.content;
   const reasoning = isStreaming ? streaming?.reasoning ?? "" : message.reasoning ?? "";
@@ -238,10 +292,11 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
 
   // In preview-enabled project chats (website/game/app builds), keep raw code
   // out of the chat bubble — render clean prose + the live ArtifactCard instead.
+  // Keep build card labels & derived steps in English regardless of UI locale.
   const artifact = React.useMemo(() => {
     if (message.role !== "assistant" || !chatPreviewEnabled || !content) return null;
-    return splitChatAndArtifact(content, isStreaming, lang);
-  }, [message.role, chatPreviewEnabled, content, isStreaming, lang]);
+    return splitChatAndArtifact(content, isStreaming, "en");
+  }, [message.role, chatPreviewEnabled, content, isStreaming]);
 
   React.useEffect(() => {
     if (isStreaming && reasoning && showReasoning) setReasoningOpen(true);
@@ -328,6 +383,29 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
               className="px-4 py-2.5"
               style={{ "--hl": 1 } as React.CSSProperties}
             >
+              {message.editContext ? (
+                <div className="mb-1.5 flex items-center">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        dir="ltr"
+                        className="inline-flex max-w-[260px] items-center gap-1.5 rounded-full border border-[color-mix(in_oklab,var(--accent)_35%,var(--border))] bg-[color-mix(in_oklab,var(--accent)_12%,var(--surface-2))] px-2 py-0.5 font-mono text-[10.5px] font-medium text-foreground/90"
+                      >
+                        <Sparkles className="size-2.5 shrink-0 text-[var(--accent)]" />
+                        <span className="truncate">{message.editContext.label}</span>
+                        {message.editContext.text ? (
+                          <span className="truncate text-[var(--muted-foreground)]">
+                            · {message.editContext.text.slice(0, 28)}
+                          </span>
+                        ) : null}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-[320px] break-all font-mono text-[10.5px]">
+                      {message.editContext.selector}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              ) : null}
               <Markdown content={message.content} className="prose-chat [&_p]:my-0.5" />
             </MenuFrame>
           )}
@@ -374,20 +452,35 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
       aria-busy={isStreaming}
     >
       <div className="pt-0.5">
-        <ProviderIcon
-          icon={provider?.icon ?? model?.icon}
-          name={providerName}
-          color={provider?.color}
-          baseUrl={provider?.baseUrl}
-          modelName={modelName}
-          modelId={model?.modelId ?? message.modelId}
-          size={30}
-        />
+        {isAdminNativeRouterMsg ? (
+          <OpenHarneksModelIcon size={30} variant="tile" />
+        ) : isUserRouterMsg ? (
+          <span
+            aria-hidden="true"
+            className="grid size-[30px] shrink-0 place-items-center rounded-[9px] border border-[var(--border)] bg-[var(--primary)]/10 text-[var(--primary)]"
+          >
+            <Route className="size-4" />
+          </span>
+        ) : (
+          <ProviderIcon
+            icon={provider?.icon ?? model?.icon}
+            name={providerName}
+            color={provider?.color}
+            baseUrl={provider?.baseUrl}
+            modelName={modelName}
+            modelId={model?.modelId ?? message.modelId}
+            size={30}
+          />
+        )}
       </div>
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex min-h-6 flex-wrap items-center gap-1.5">
           <span className="truncate text-[12.5px] font-semibold text-foreground">{modelName || providerName}</span>
-          {model ? (
+          {isUserRouterMsg ? (
+            <span className="inline-flex shrink-0 items-center rounded-full border border-[color-mix(in_oklab,var(--primary)_40%,transparent)] bg-[var(--primary-soft)] px-1.5 py-[1px] text-[9.5px] font-semibold leading-tight text-[var(--primary)]">
+              {t("router.badge")}
+            </span>
+          ) : !isAdminNativeRouterMsg && model ? (
             <span className="hidden rounded-[5px] border border-[var(--border)] bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[9.5px] text-[var(--faint)] sm:inline">
               {model.modelId}
             </span>
@@ -444,7 +537,7 @@ export function MessageItem({ message, streaming, isLast }: MessageItemProps) {
               <Markdown content={artifact.beforeText} streaming={isStreaming && !artifact.hasCode} />
             ) : null}
             {artifact.hasCode ? (
-              <ArtifactCard messageId={message.id} artifact={artifact} />
+              <ArtifactCard messageId={message.id} artifact={artifact} skillMode={activeSkillId} />
             ) : null}
             {artifact.afterText ? (
               <Markdown content={artifact.afterText} streaming={isStreaming} />

@@ -5,7 +5,6 @@
 import { create } from "zustand";
 import { db } from "@/db";
 import { apiFetch } from "@/lib/api";
-import type { DevPublicRouter } from "@/lib/devAdminMock";
 import {
   filterFreeEligibleModels,
   normalizeModelPricing,
@@ -32,8 +31,11 @@ export interface PublicRouterItem {
   id: string;
   ownerScope: "public" | "user";
   providerId: string | null;
+  providerIds?: string[];
   userProviderId: string | null;
+  userProviderIds?: string[];
   providerName?: string;
+  providerNames?: string[];
   name: string;
   type: "free";
   enabled: boolean;
@@ -42,14 +44,17 @@ export interface PublicRouterItem {
   capabilities: string[];
   billingSource: "site" | "byok";
   consumesCredits: boolean;
-  source: "server" | "dev";
+  source: "server";
   createdAt: string;
   updatedAt?: string;
 }
 
 export interface LocalUserRouter {
   id: string;
+  /** Primary (first) provider id — kept for backward compatibility with single-provider routers. */
   providerId: string;
+  /** All attached provider ids (1 or more) pooled into this free router. */
+  providerIds: string[];
   name: string;
   type: "free";
   enabled: boolean;
@@ -61,9 +66,11 @@ export interface CombinedRouterItem {
   id: string;
   selectionId: string;
   ownerScope: "public" | "user";
-  source: "server" | "dev" | "local";
+  source: "server" | "local";
   providerId: string | null;
+  providerIds?: string[];
   providerName: string;
+  providerNames?: string[];
   name: string;
   type: "free";
   enabled: boolean;
@@ -71,6 +78,21 @@ export interface CombinedRouterItem {
   memberModelIds: string[];
   capabilities: string[];
   billingSource: "site" | "byok";
+}
+
+export function localRouterProviderIds(
+  router: Pick<LocalUserRouter, "providerId" | "providerIds">,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...(Array.isArray(router.providerIds) ? router.providerIds : []), router.providerId]) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 const LOCAL_ROUTERS_META_KEY = "user_routers.v1";
@@ -159,20 +181,56 @@ export function eligibleFreeModelsForLocalProvider(
   return eligible.map((entry) => entry.raw);
 }
 
+/**
+ * Returns strictly free & active models across one or more local providers,
+ * preserving each model's owning provider for runtime key/endpoint resolution.
+ */
+export function eligibleFreeModelsForLocalProviders(
+  providers: readonly Provider[],
+  models: readonly AIModel[],
+): Array<{ provider: Provider; model: AIModel }> {
+  const out: Array<{ provider: Provider; model: AIModel }> = [];
+  const seenModelIds = new Set<string>();
+  for (const provider of providers) {
+    if (!provider || !provider.enabled) continue;
+    const eligible = eligibleFreeModelsForLocalProvider(provider, models);
+    for (const model of eligible) {
+      if (seenModelIds.has(model.id)) continue;
+      seenModelIds.add(model.id);
+      out.push({ provider, model });
+    }
+  }
+  return out;
+}
+
 async function loadLocalRouters(): Promise<LocalUserRouter[]> {
   try {
     const row = await db.meta.get(LOCAL_ROUTERS_META_KEY);
     if (!row || typeof row.v !== "string") return [];
     const parsed = JSON.parse(row.v) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is LocalUserRouter =>
-        Boolean(item) &&
-        typeof item === "object" &&
-        typeof (item as LocalUserRouter).id === "string" &&
-        typeof (item as LocalUserRouter).providerId === "string" &&
-        typeof (item as LocalUserRouter).name === "string",
-    );
+    const normalized: LocalUserRouter[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Partial<LocalUserRouter>;
+      if (typeof rec.id !== "string" || typeof rec.name !== "string") continue;
+      const pIds = localRouterProviderIds({
+        providerId: typeof rec.providerId === "string" ? rec.providerId : "",
+        providerIds: Array.isArray(rec.providerIds) ? rec.providerIds : [],
+      });
+      if (pIds.length === 0) continue;
+      normalized.push({
+        id: rec.id,
+        providerId: pIds[0]!,
+        providerIds: pIds,
+        name: rec.name,
+        type: "free",
+        enabled: rec.enabled !== false,
+        createdAt: typeof rec.createdAt === "string" ? rec.createdAt : new Date().toISOString(),
+        updatedAt: typeof rec.updatedAt === "string" ? rec.updatedAt : new Date().toISOString(),
+      });
+    }
+    return normalized;
   } catch {
     return [];
   }
@@ -197,7 +255,8 @@ interface RoutersState {
   hydrate: () => Promise<void>;
   refresh: () => Promise<void>;
   createLocalRouter: (args: {
-    provider: Provider;
+    provider?: Provider;
+    providers?: readonly Provider[];
     name: string;
     allModels: readonly AIModel[];
     extraModelNames?: readonly string[];
@@ -230,10 +289,41 @@ function schedulePoll(refresh: () => Promise<void>) {
   }, pollDelayMs);
 }
 
+const PUBLIC_ROUTERS_CACHE_KEY = "openharness.routers.v1";
+const PUBLIC_ROUTERS_CACHE_TTL = 5 * 60_000;
+
+function readPublicRoutersCache(): PublicRouterItem[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PUBLIC_ROUTERS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { at?: number; routers?: PublicRouterItem[] };
+    if (!Array.isArray(parsed.routers)) return [];
+    if (typeof parsed.at !== "number" || Date.now() - parsed.at > PUBLIC_ROUTERS_CACHE_TTL) return [];
+    return parsed.routers;
+  } catch {
+    return [];
+  }
+}
+
+function writePublicRoutersCache(routers: PublicRouterItem[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      PUBLIC_ROUTERS_CACHE_KEY,
+      JSON.stringify({ at: Date.now(), routers }),
+    );
+  } catch {
+    // Ignore storage quota/private mode errors.
+  }
+}
+
+const INITIAL_CACHED_ROUTERS = readPublicRoutersCache();
+
 export const useRoutersStore = create<RoutersState>((set, get) => ({
-  publicRouters: [],
+  publicRouters: INITIAL_CACHED_ROUTERS,
   localRouters: [],
-  loaded: false,
+  loaded: INITIAL_CACHED_ROUTERS.length > 0,
   loading: false,
 
   hydrate: async () => {
@@ -263,41 +353,12 @@ export const useRoutersStore = create<RoutersState>((set, get) => ({
     if (get().loading) return;
     set({ loading: true });
     try {
-      let devRouters: DevPublicRouter[] | null = null;
-      if (import.meta.env.DEV) {
-        const { devPublicRouters } = await import("@/lib/devAdminMock");
-        devRouters = await devPublicRouters();
-      }
-      if (devRouters !== null) {
-        const mapped: PublicRouterItem[] = devRouters.map((r) => ({
-          id: r.id,
-          ownerScope: "public",
-          providerId: r.providerId,
-          userProviderId: null,
-          providerName: "OpenHarneks",
-          name: r.name,
-          type: "free",
-          enabled: r.enabled,
-          activeMemberCount: r.activeMemberCount,
-          memberModelIds: r.memberModelIds,
-          capabilities: r.capabilities,
-          billingSource: "site",
-          consumesCredits: true,
-          source: "dev",
-          createdAt: r.createdAt,
-          updatedAt: r.updatedAt,
-        }));
-        pollDelayMs = BASE_POLL_MS;
-        set({ publicRouters: mapped, loaded: true, loading: false });
-        schedulePoll(get().refresh);
-        return;
-      }
-
       const res = await apiFetch<{ routers?: Omit<PublicRouterItem, "source">[] }>("/api/routers");
       const list: PublicRouterItem[] = (res?.routers ?? []).map((r) => ({
         ...r,
         source: "server",
       }));
+      writePublicRoutersCache(list);
       pollDelayMs = BASE_POLL_MS;
       set({ publicRouters: list, loaded: true, loading: false });
       schedulePoll(get().refresh);
@@ -309,12 +370,23 @@ export const useRoutersStore = create<RoutersState>((set, get) => ({
     }
   },
 
-  createLocalRouter: async ({ provider, name, allModels, extraModelNames = [] }) => {
-    const eligible = eligibleFreeModelsForLocalProvider(provider, allModels);
+  createLocalRouter: async ({ provider, providers: inputProviders, name, allModels, extraModelNames = [] }) => {
+    const selectedProviders: Provider[] = [];
+    const seenPid = new Set<string>();
+    for (const p of [...(inputProviders ?? []), ...(provider ? [provider] : [])]) {
+      if (!p || seenPid.has(p.id)) continue;
+      seenPid.add(p.id);
+      selectedProviders.push(p);
+    }
+    if (selectedProviders.length === 0) {
+      return { ok: false, error: "Select at least one provider." };
+    }
+
+    const eligible = eligibleFreeModelsForLocalProviders(selectedProviders, allModels);
     if (eligible.length === 0) {
       return {
         ok: false,
-        error: "No verified free models are available for this provider.",
+        error: "No verified free models are available for the selected provider(s).",
       };
     }
 
@@ -335,9 +407,11 @@ export const useRoutersStore = create<RoutersState>((set, get) => ({
     }
 
     const now = new Date().toISOString();
+    const providerIds = selectedProviders.map((p) => p.id);
     const created: LocalUserRouter = {
       id: `local-router-${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)}`,
-      providerId: provider.id,
+      providerId: providerIds[0]!,
+      providerIds,
       name: check.normalized,
       type: "free",
       enabled: true,
@@ -390,13 +464,46 @@ export const useRoutersStore = create<RoutersState>((set, get) => ({
 
   syncProviderDeleted: async (providerId) => {
     const current = get().localRouters;
-    const next = current.filter((r) => r.providerId !== providerId);
-    if (next.length !== current.length) {
+    let changed = false;
+    const next: LocalUserRouter[] = [];
+    for (const r of current) {
+      const pIds = localRouterProviderIds(r);
+      if (!pIds.includes(providerId)) {
+        next.push(r);
+        continue;
+      }
+      changed = true;
+      const remaining = pIds.filter((pid) => pid !== providerId);
+      if (remaining.length === 0) continue;
+      next.push({
+        ...r,
+        providerId: remaining[0]!,
+        providerIds: remaining,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    if (changed) {
       set({ localRouters: next });
       await saveLocalRouters(next);
     }
   },
 }));
+
+/**
+ * True when a router was created from the Admin Panel for the public site.
+ * Admin public routers render on the public site as native OpenHarneks models
+ * (without router icon/badge and without exposing underlying provider/models),
+ * whereas personal user routers (`ownerScope === "user"`) keep standard router UI.
+ */
+export function isAdminPublicRouter(
+  router:
+    | Pick<CombinedRouterItem, "ownerScope">
+    | Pick<PublicRouterItem, "ownerScope">
+    | null
+    | undefined,
+): boolean {
+  return router?.ownerScope === "public";
+}
 
 /**
  * Combines public admin routers + local user routers with live member counts.
@@ -414,18 +521,33 @@ export function buildCombinedRouters(
 
   for (const r of publicRouters) {
     if (!r.enabled) continue;
+    const isAdminNative = isAdminPublicRouter(r);
+    const attachedIds = isAdminNative
+      ? []
+      : [
+          ...new Set(
+            [
+              ...(r.userProviderIds ?? []),
+              ...(r.providerIds ?? []),
+              r.userProviderId,
+              r.providerId,
+            ].filter((id): id is string => Boolean(id)),
+          ),
+        ];
     out.push({
       id: r.id,
       selectionId: toRouterSelectionId(r.id),
       ownerScope: r.ownerScope,
       source: r.source,
-      providerId: r.providerId ?? r.userProviderId,
-      providerName: r.providerName || "OpenHarneks",
+      providerId: isAdminNative ? null : (attachedIds[0] ?? null),
+      providerIds: attachedIds,
+      providerName: isAdminNative ? "OpenHarneks" : (r.providerName || "OpenHarneks"),
+      providerNames: isAdminNative ? [] : (r.providerNames ?? (r.providerName ? [r.providerName] : [])),
       name: r.name,
       type: r.type,
       enabled: r.enabled,
       activeMemberCount: r.activeMemberCount,
-      memberModelIds: r.memberModelIds,
+      memberModelIds: isAdminNative ? [] : r.memberModelIds,
       capabilities: r.capabilities,
       billingSource: r.billingSource,
     });
@@ -433,26 +555,32 @@ export function buildCombinedRouters(
 
   for (const r of localRouters) {
     if (!r.enabled) continue;
-    const provider = providerById.get(r.providerId);
-    // If provider was deleted, omit dangling router immediately
-    if (!provider) continue;
-    const eligible = eligibleFreeModelsForLocalProvider(provider, models);
+    const pIds = localRouterProviderIds(r);
+    const attachedProviders = pIds
+      .map((pid) => providerById.get(pid))
+      .filter((p): p is Provider => Boolean(p));
+    // If every attached provider was deleted, omit dangling router immediately
+    if (attachedProviders.length === 0) continue;
+    const eligibleEntries = eligibleFreeModelsForLocalProviders(attachedProviders, models);
     const caps = new Set<string>(["text"]);
-    for (const m of eligible) {
+    for (const { model: m } of eligibleEntries) {
       for (const c of m.capabilities ?? []) caps.add(c);
     }
+    const attachedNames = attachedProviders.map((p) => p.name);
     out.push({
       id: r.id,
       selectionId: toRouterSelectionId(r.id),
       ownerScope: "user",
       source: "local",
-      providerId: r.providerId,
-      providerName: provider.name,
+      providerId: attachedProviders[0]!.id,
+      providerIds: attachedProviders.map((p) => p.id),
+      providerName: attachedNames.join(" + "),
+      providerNames: attachedNames,
       name: r.name,
       type: r.type,
       enabled: r.enabled,
-      activeMemberCount: eligible.length,
-      memberModelIds: eligible.map((m) => m.id),
+      activeMemberCount: eligibleEntries.length,
+      memberModelIds: eligibleEntries.map(({ model: m }) => m.id),
       capabilities: [...caps],
       billingSource: "byok",
     });

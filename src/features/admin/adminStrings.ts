@@ -81,9 +81,6 @@ const en: Record<string, string> = {
   "admin.disabled": "Disabled",
   "admin.pasteKeys": "Paste at least one key.",
   "admin.invalidUrl": "Enter a valid public https URL.",
-  "admin.previewTitle": "Local preview mode",
-  "admin.previewNote": "No Supabase project is configured here, so the panel uses a local development store on the dev server. Everything you add is visible to every browser on this computer, like a real deployment, and is deleted by \"Exit preview\". Production builds always require the admin password.",
-  "admin.previewExit": "Exit preview",
   "admin.loginTitle": "Administrator sign-in",
   "admin.loginSubtitle": "This page is separate from the site. Enter the admin password to manage providers, keys and users.",
   "admin.password": "Password",
@@ -156,6 +153,14 @@ const en: Record<string, string> = {
   "admin.routerBadge": "Router",
   "admin.routerActiveCount": "{n} free models",
   "admin.routerEmpty": "No active free models",
+  "admin.routerHiddenHint": "Shown on the main site as a native OpenHarneks model and stays active even when provider models are hidden.",
+  "admin.routerPoolTitle": "Free Model Routers (Multi-Provider)",
+  "admin.routerPoolDesc": "Combine verified free models from one or more providers into a single native OpenHarneks model.",
+  "admin.routerSelectProviders": "Select providers to include",
+  "admin.routerSelectAll": "Select all",
+  "admin.routerClearSelection": "Clear",
+  "admin.routerSelectedSummary": "{models} free models from {providers} provider(s) selected",
+  "admin.routerNoSelection": "Select one or more providers with verified free models.",
 };
 
 const fa: Record<string, string> = {
@@ -229,9 +234,6 @@ const fa: Record<string, string> = {
   "admin.disabled": "غیرفعال",
   "admin.pasteKeys": "حداقل یک کلید وارد کنید.",
   "admin.invalidUrl": "یک آدرس https عمومی معتبر وارد کنید.",
-  "admin.previewTitle": "حالت پیش‌نمایش محلی",
-  "admin.previewNote": "چون Supabase روی این محیط تنظیم نشده، پنل از یک مخزن محلی روی سرور دولوپمنت استفاده می‌کند. هر چیزی که اضافه کنی برای همه‌ی مرورگرهای همین کامپیوتر قابل مشاهده است (مثل نسخه‌ی واقعی) و با «خروج از پیش‌نمایش» پاک می‌شود. نسخه‌ی production همیشه رمز ادمین می‌خواهد.",
-  "admin.previewExit": "خروج از پیش‌نمایش",
   "admin.loginTitle": "ورود مدیر",
   "admin.loginSubtitle": "این صفحه جدا از سایت است. برای مدیریت پرووایدرها، کلیدها و کاربران رمز مدیر را وارد کنید.",
   "admin.password": "رمز عبور",
@@ -304,6 +306,14 @@ const fa: Record<string, string> = {
   "admin.routerBadge": "روتر",
   "admin.routerActiveCount": "{n} مدل رایگان",
   "admin.routerEmpty": "بدون مدل فعال",
+  "admin.routerHiddenHint": "در سایت اصلی به عنوان مدل اختصاصی OpenHarneks نمایش داده می‌شود و حتی با مخفی کردن مدل‌های پرووایدر، فعال می‌ماند.",
+  "admin.routerPoolTitle": "روترهای مدل رایگان (چند پرووایدری)",
+  "admin.routerPoolDesc": "مدل‌های رایگان تاییدشدهٔ یک یا چند پرووایدر را در یک مدل اختصاصی OpenHarneks ترکیب کنید.",
+  "admin.routerSelectProviders": "پرووایدرهای عضو روتر را انتخاب کنید",
+  "admin.routerSelectAll": "انتخاب همه",
+  "admin.routerClearSelection": "پاک کردن",
+  "admin.routerSelectedSummary": "{models} مدل رایگان از {providers} پرووایدر انتخاب شده",
+  "admin.routerNoSelection": "حداقل یک پرووایدر دارای مدل رایگان تاییدشده انتخاب کنید.",
 };
 
 const ADMIN_DICTIONARIES: Record<Lang, Record<string, string>> = { en, fa };

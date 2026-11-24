@@ -2,6 +2,7 @@
 import { Check, Coins, Cpu, Lock, Route, Search } from "lucide-react";
 import * as React from "react";
 import { CapabilityChips } from "@/components/CapabilityChips";
+import { OpenHarneksModelIcon } from "@/components/Logo";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { TierBadge } from "@/components/TierBadge";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +20,7 @@ import { useAuthStore } from "@/stores/auth";
 import { useChatsStore } from "@/stores/chats";
 import { useAllModels, useAllProviders } from "@/stores/catalog";
 import { useProvidersStore } from "@/stores/providers";
-import { buildCombinedRouters, useRoutersStore } from "@/stores/routers";
+import { buildCombinedRouters, isAdminPublicRouter, useRoutersStore } from "@/stores/routers";
 import { useUiStore } from "@/stores/ui";
 import type { AIModel, Provider } from "@/lib/types";
 
@@ -137,6 +138,46 @@ export function ModelPicker() {
     setOpen(false);
   };
 
+  const adminNativeRouters = React.useMemo(
+    () => combinedRouters.filter((r) => isAdminPublicRouter(r)),
+    [combinedRouters],
+  );
+  const userRouters = React.useMemo(
+    () => combinedRouters.filter((r) => !isAdminPublicRouter(r)),
+    [combinedRouters],
+  );
+  const hasOpenHarneksGroup = groups.some((g) => g.name === "OpenHarneks");
+
+  const renderAdminNativeRouterItem = (router: (typeof adminNativeRouters)[number]) => {
+    const empty = router.activeMemberCount === 0;
+    const active = chat?.modelId === router.selectionId;
+    return (
+      <CommandItem
+        key={router.id}
+        value={`OpenHarneks ${router.name}`}
+        onSelect={() => {
+          if (empty) return;
+          void setChatModel("router", router.selectionId);
+          setOpen(false);
+        }}
+        disabled={empty}
+        className={cn("gap-2.5 rounded-[10px] py-2", empty && "opacity-60")}
+        aria-current={active}
+      >
+        <OpenHarneksModelIcon size={26} variant="tile" />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[12.5px] font-medium text-foreground">
+              {router.name}
+            </span>
+          </span>
+          <span className="text-[10.5px] text-[var(--faint)]">OpenHarneks</span>
+        </span>
+        {active ? <Check className="size-3.5 text-[var(--primary)]" /> : null}
+      </CommandItem>
+    );
+  };
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent frame className="gap-0 p-0 sm:w-[min(640px,calc(100vw-2rem))]" hideClose>
@@ -188,9 +229,9 @@ export function ModelPicker() {
           <Command shouldFilter className="bg-transparent">
             <CommandInput placeholder={t("models.pickerSearch")} aria-label={t("models.pickerSearch")} />
             <CommandList className="max-h-[min(56vh,480px)]">
-              {combinedRouters.length > 0 ? (
+              {userRouters.length > 0 ? (
                 <CommandGroup heading={t("router.section")}>
-                  {combinedRouters.map((router) => {
+                  {userRouters.map((router) => {
                     const empty = router.activeMemberCount === 0;
                     const active = chat?.modelId === router.selectionId;
                     return (
@@ -228,6 +269,11 @@ export function ModelPicker() {
                   })}
                 </CommandGroup>
               ) : null}
+              {adminNativeRouters.length > 0 && !hasOpenHarneksGroup ? (
+                <CommandGroup heading="OpenHarneks">
+                  {adminNativeRouters.map(renderAdminNativeRouterItem)}
+                </CommandGroup>
+              ) : null}
               {groups.map((group) => {
                 const tierParts: string[] = [];
                 if (group.freeCount > 0) tierParts.push(`${group.freeCount} ${t("models.free")}`);
@@ -238,6 +284,9 @@ export function ModelPicker() {
                     : group.name;
                 return (
                 <CommandGroup key={group.key} heading={heading}>
+                  {group.name === "OpenHarneks" && adminNativeRouters.length > 0
+                    ? adminNativeRouters.map(renderAdminNativeRouterItem)
+                    : null}
                   {group.entries.map(({ provider, model }) => {
                     const tier = effectiveTier(model, provider);
                     const active = chat?.modelId === model.id && chat?.providerId === provider.id;

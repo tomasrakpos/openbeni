@@ -86,7 +86,7 @@ export function apiHeaders(request: Request, env: SecurityEnv, extra?: Record<st
     );
     headers.set(
       "Access-Control-Expose-Headers",
-      "X-Billing-Source, X-Credits-Charged, X-Preview-Intent, X-Preview-Category, X-Preview-Source, X-Skill-Id, X-Skill-Source, X-Skill-Search-Count",
+      "X-Billing-Source, X-Credits-Charged, X-Credits-Remaining, X-Preview-Intent, X-Preview-Category, X-Skill-Category, X-Skill-Id, X-Skill-Source, X-Skill-Mode, X-Skill-Names, X-Skill-Tokens",
     );
     headers.set("Access-Control-Max-Age", "600");
   }

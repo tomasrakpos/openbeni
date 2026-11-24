@@ -1,84 +1,71 @@
-// providers feature: ProvidersPage; change its UI/flow here and keep related state/API calls in sync.
-import { Activity, AlertTriangle, Cpu, Plus, Search, Server, Zap } from "lucide-react";
+// providers feature: ProvidersPage; connects ProviderManager to providers, models, and local routers stores.
+import { Plus } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { GlowButton } from "@/components/ui/glow-button";
 import { MenuFrame } from "@/components/ui/menu-frame";
-import { ProviderCard } from "@/features/providers/ProviderCard";
 import { ModelEditor } from "@/features/models/ModelEditor";
+import {
+  ProviderManager,
+  type PProvider,
+  type PRouter,
+} from "@/features/providers/ProviderManager";
 import { isBundledProvider } from "@/lib/bundled";
+import { formatLabel } from "@/lib/detect";
+import { copyToClipboard } from "@/lib/export";
 import { useT } from "@/lib/i18n";
 import { latestPing } from "@/lib/ping";
 import { loadProviderWizard } from "@/lib/preload";
-import { cn } from "@/lib/utils";
+import { effectiveTier } from "@/lib/registry";
+import type { AIModel, Provider } from "@/lib/types";
+import { useCatalogStore } from "@/stores/catalog";
 import { useProvidersStore } from "@/stores/providers";
+import {
+  eligibleFreeModelsForLocalProviders,
+  localRouterProviderIds,
+  useRoutersStore,
+} from "@/stores/routers";
+import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
-import type { AIModel } from "@/lib/types";
 
 const MENU_HL = { "--hl": 1 } as React.CSSProperties;
 
-function StatCard({
-  label,
-  value,
-  hint,
-  icon,
-  tone,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  icon: React.ReactNode;
-  tone?: "primary" | "success" | "accent";
-}) {
-  const colors =
-    tone === "success"
-      ? "text-[var(--success)] bg-[var(--success-soft)]"
-      : tone === "accent"
-        ? "text-[var(--accent)] bg-[var(--accent-soft)]"
-        : "text-[var(--primary)] bg-[var(--primary-soft)]";
-  return (
-    <MenuFrame style={MENU_HL} className="flex items-center gap-3 p-3.5">
-      <span className={cn("grid size-9 shrink-0 place-items-center rounded-[11px]", colors)}>{icon}</span>
-      <span className="min-w-0">
-        <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--faint)]">
-          {label}
-        </span>
-        <span className="mt-0.5 flex items-baseline gap-1.5">
-          <span className="text-[17px] font-semibold leading-none tabular-nums text-foreground">{value}</span>
-          <span className="truncate text-[10.5px] text-[var(--muted-foreground)]">{hint}</span>
-        </span>
-      </span>
-    </MenuFrame>
-  );
-}
-
-function ProviderAddButton() {
-  const t = useT();
-  const openWizard = useUiStore((s) => s.openWizard);
-  const warm = () => void loadProviderWizard();
-  return (
-    <Button size="sm" onClick={() => openWizard()} onPointerEnter={warm} onFocus={warm} aria-haspopup="dialog">
-      <Plus className="size-3.5" /> {t("providers.add")}
-    </Button>
-  );
-}
-
 export function ProvidersPage() {
   const t = useT();
+  const lang = useSettingsStore((s) => s.settings.lang);
   const providers = useProvidersStore((s) => s.providers);
   const models = useProvidersStore((s) => s.models);
   const pings = useProvidersStore((s) => s.pings);
   const loading = useProvidersStore((s) => s.loading);
   const working = useProvidersStore((s) => s.working);
   const pingAll = useProvidersStore((s) => s.pingAll);
+  const pingOne = useProvidersStore((s) => s.pingOne);
+  const pingModelById = useProvidersStore((s) => s.pingModelById);
+  const setProviderEnabled = useProvidersStore((s) => s.setProviderEnabled);
+  const setProviderFavorite = useProvidersStore((s) => s.setProviderFavorite);
+  const duplicateProvider = useProvidersStore((s) => s.duplicateProvider);
+  const deleteProvider = useProvidersStore((s) => s.deleteProvider);
+  const updateModel = useProvidersStore((s) => s.updateModel);
+  const deleteModel = useProvidersStore((s) => s.deleteModel);
+  const addModels = useProvidersStore((s) => s.addModels);
+  const openWizard = useUiStore((s) => s.openWizard);
 
-  const [query, setQuery] = React.useState("");
+  const localRouters = useRoutersStore((s) => s.localRouters);
+  const createLocalRouter = useRoutersStore((s) => s.createLocalRouter);
+  const toggleLocalRouter = useRoutersStore((s) => s.toggleLocalRouter);
+  const deleteLocalRouter = useRoutersStore((s) => s.deleteLocalRouter);
+  const catalogModels = useCatalogStore((s) => s.models);
+
   const [editingModel, setEditingModel] = React.useState<AIModel | null>(null);
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [pingingAll, setPingingAll] = React.useState(false);
+  const [confirmDeleteProvider, setConfirmDeleteProvider] = React.useState<Provider | null>(null);
+
+  const warmWizard = React.useCallback(() => {
+    void loadProviderWizard();
+  }, []);
 
   const sorted = React.useMemo(
     () =>
@@ -90,34 +77,74 @@ export function ProvidersPage() {
     [providers],
   );
 
-  // Bundled gateways are project-owned: they power the model list but never
-  // appear as accounts the user can edit or delete.
-  const visibleModels = React.useMemo(() => {
-    const ids = new Set(sorted.map((provider) => provider.id));
-    return models.filter((model) => ids.has(model.providerId));
-  }, [models, sorted]);
+  const providerMap = React.useMemo(() => new Map(sorted.map((p) => [p.id, p])), [sorted]);
+  const modelMap = React.useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
 
-  const filtered = React.useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return sorted;
-    return sorted.filter((provider) => {
-      if (provider.name.toLowerCase().includes(needle)) return true;
-      if (provider.baseUrl.toLowerCase().includes(needle)) return true;
-      return visibleModels.some(
-        (model) =>
-          model.providerId === provider.id &&
-          (model.displayName.toLowerCase().includes(needle) || model.modelId.toLowerCase().includes(needle)),
-      );
-    });
-  }, [visibleModels, query, sorted]);
+  const viewProviders: PProvider[] = React.useMemo(
+    () =>
+      sorted.map((provider) => {
+        const providerPing = latestPing(pings, provider.id);
+        const providerModels = models
+          .filter((m) => m.providerId === provider.id)
+          .sort((a, b) => a.order - b.order || a.displayName.localeCompare(b.displayName))
+          .map((m) => {
+            const mPing = latestPing(pings, provider.id, m.id);
+            const tier = effectiveTier(m, provider);
+            return {
+              id: m.id,
+              modelId: m.modelId,
+              name: m.displayName,
+              pricing: tier,
+              context: m.contextWindow,
+              enabled: m.enabled,
+              latencyMs: mPing?.ok ? mPing.latencyMs : null,
+              failed: mPing ? !mPing.ok : false,
+            };
+          });
 
-  const enabledProviders = sorted.filter((provider) => provider.enabled);
-  const enabledModels = visibleModels.filter((model) => model.enabled);
-  const online = sorted.filter((provider) => latestPing(pings, provider.id)?.ok).length;
+        return {
+          id: provider.id,
+          name: provider.name,
+          baseUrl: provider.baseUrl,
+          format: formatLabel(provider.apiFormat),
+          color: provider.color ?? "#8b7bff",
+          icon: provider.icon,
+          enabled: provider.enabled,
+          keyStored: Boolean(provider.hasKey),
+          managed: provider.managed,
+          favorite: provider.favorite,
+          latencyMs: providerPing?.ok ? providerPing.latencyMs : null,
+          failed: providerPing ? !providerPing.ok : false,
+          models: providerModels,
+        };
+      }),
+    [sorted, models, pings],
+  );
+
+  const viewRouters: PRouter[] = React.useMemo(
+    () =>
+      localRouters.map((router) => {
+        const pIds = localRouterProviderIds(router);
+        const attached = pIds
+          .map((pid) => providerMap.get(pid))
+          .filter((p): p is Provider => Boolean(p));
+        return {
+          id: router.id,
+          name: router.name,
+          providerId: router.providerId,
+          providerIds: pIds,
+          providerNames: attached.map((p) => p.name),
+          members: eligibleFreeModelsForLocalProviders(attached, models).length,
+          enabled: router.enabled,
+        };
+      }),
+    [localRouters, providerMap, models],
+  );
+
   const anyWorking = Object.values(working).some(Boolean);
 
   const runPingAll = async () => {
-    if (enabledProviders.length === 0) return;
+    if (pingingAll || anyWorking || sorted.every((p) => !p.enabled)) return;
     setPingingAll(true);
     try {
       await pingAll();
@@ -127,132 +154,160 @@ export function ProvidersPage() {
     }
   };
 
-  const editModel = (model: AIModel) => {
-    setEditingModel(model);
-    setEditorOpen(true);
-  };
-
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="page-rise mx-auto w-full max-w-[1080px] px-4 pb-16 pt-5 sm:px-6 sm:pt-7">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <MenuFrame style={MENU_HL} className="grid size-8 place-items-center !rounded-[10px] text-[var(--primary)]">
-                <Server className="size-4" />
+      <div className="page-rise mx-auto w-full max-w-[860px] px-4 pb-20 pt-5 sm:px-6 sm:pt-7">
+        {loading && sorted.length === 0 ? (
+          <div className="mx-auto max-w-[780px] space-y-3">
+            {[0, 1, 2].map((index) => (
+              <MenuFrame key={index} style={MENU_HL} className="flex animate-pulse items-center gap-3 p-4">
+                <span className="size-[44px] rounded-[13px] bg-[var(--surface-2)]" />
+                <div className="flex-1 space-y-2">
+                  <span className="block h-3 w-36 rounded bg-[var(--surface-2)]" />
+                  <span className="block h-2.5 w-56 rounded bg-[var(--surface-2)]" />
+                </div>
               </MenuFrame>
-              <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-foreground sm:text-[26px]">
-                {t("providers.title")}
-              </h1>
-              <Badge variant="primary" className="hidden sm:inline-flex">
-                {sorted.length}
-              </Badge>
-            </div>
-            <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
-              {t("providers.subtitle")}
-            </p>
+            ))}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={runPingAll}
-              disabled={pingingAll || anyWorking || enabledProviders.length === 0}
-            >
-              {pingingAll ? <Activity className="size-3.5 animate-pulse" /> : <Zap className="size-3.5" />}
-              {pingingAll ? t("providers.pinging") : t("providers.pingAll")}
-            </Button>
-            <ProviderAddButton />
-          </div>
-        </header>
-
-        {sorted.length > 0 && (
-          <>
-            <div className="mt-5 grid gap-2.5 sm:grid-cols-3">
-              <StatCard
-                label={t("providers.title")}
-                value={String(sorted.length)}
-                hint={`${enabledProviders.length} ${t("common.enabled").toLowerCase()}`}
-                icon={<Server className="size-4" />}
-              />
-              <StatCard
-                label={t("nav.models")}
-                value={String(visibleModels.length)}
-                hint={`${enabledModels.length} ${t("common.enabled").toLowerCase()}`}
-                icon={<Cpu className="size-4" />}
-                tone="accent"
-              />
-              <StatCard
-                label={t("providers.lastPing")}
-                value={String(online)}
-                hint={`/ ${sorted.length} ${t("common.status").toLowerCase()}`}
-                icon={<Activity className="size-4" />}
-                tone="success"
-              />
-            </div>
-
-            <MenuFrame style={MENU_HL} className="relative mt-4 !rounded-[14px]">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--faint)]" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={`${t("common.search")} ${t("providers.title").toLowerCase()}, ${t("nav.models").toLowerCase()}…`}
-                className="h-10 border-0 bg-transparent pl-9 text-[12.5px] shadow-none focus-visible:ring-0"
-                aria-label={t("common.search")}
-              />
-            </MenuFrame>
-          </>
-        )}
-
-        <div className="mt-4 space-y-3">
-          {loading && sorted.length === 0
-            ? [0, 1, 2].map((index) => (
-                <MenuFrame key={index} style={MENU_HL} className="flex animate-pulse items-center gap-3 p-4">
-                  <span className="size-[42px] rounded-[12px] bg-[var(--surface-2)]" />
-                  <div className="flex-1 space-y-2">
-                    <span className="block h-3 w-36 rounded bg-[var(--surface-2)]" />
-                    <span className="block h-2.5 w-56 rounded bg-[var(--surface-2)]" />
-                  </div>
-                </MenuFrame>
-              ))
-            : null}
-
-          {!loading && sorted.length === 0 ? (
-            <MenuFrame style={MENU_HL} className="relative overflow-hidden">
-              <div className="absolute inset-0 bg-[radial-gradient(28rem_18rem_at_50%_-20%,var(--primary-soft),transparent_70%)]" />
-              <div className="relative flex flex-col items-center px-6 py-14 text-center">
-                <div className="flex -space-x-2.5">
-                  {["OpenAI", "Anthropic", "Google", "Groq"].map((name) => (
-                    <ProviderIcon key={name} name={name} size={38} water className="ring-2 ring-[var(--surface-1)]" />
-                  ))}
-                </div>
-                <h2 className="mt-5 text-[17px] font-semibold text-foreground">{t("providers.empty")}</h2>
-                <p className="mt-1.5 max-w-[460px] text-balance text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
-                  {t("providers.emptyDesc")}
-                </p>
-                <div className="mt-5 flex flex-wrap justify-center gap-2">
-                  <ProviderAddButton />
-                </div>
+        ) : !loading && sorted.length === 0 ? (
+          <MenuFrame style={MENU_HL} className="relative mx-auto max-w-[780px] overflow-hidden">
+            <div className="absolute inset-0 bg-[radial-gradient(28rem_18rem_at_50%_-20%,var(--primary-soft),transparent_70%)]" />
+            <div className="relative flex flex-col items-center px-6 py-14 text-center">
+              <div className="flex -space-x-2.5">
+                {["OpenAI", "Anthropic", "Google", "Groq"].map((name) => (
+                  <ProviderIcon key={name} name={name} size={38} water className="ring-2 ring-[var(--surface-1)]" />
+                ))}
               </div>
-            </MenuFrame>
-          ) : filtered.length === 0 ? (
-            <MenuFrame style={MENU_HL} className="flex flex-col items-center gap-2 px-6 py-12 text-center">
-              <AlertTriangle className="size-5 text-[var(--warning)]" />
-              <p className="text-[13px] font-medium text-foreground">{t("palette.noResults")}</p>
-              <p className="text-[11.5px] text-[var(--muted-foreground)]">{query}</p>
-              <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
-                {t("common.refresh")}
-              </Button>
-            </MenuFrame>
-          ) : (
-            filtered.map((provider) => (
-              <ProviderCard key={provider.id} provider={provider} onEditModel={editModel} />
-            ))
-          )}
-        </div>
+              <h2 className="mt-5 text-[17px] font-semibold text-foreground">{t("providers.empty")}</h2>
+              <p className="mt-1.5 max-w-[460px] text-balance text-[12.5px] leading-relaxed text-[var(--muted-foreground)]">
+                {t("providers.emptyDesc")}
+              </p>
+              <div className="mt-5 flex flex-wrap justify-center gap-2">
+                <GlowButton
+                  size="sm"
+                  icon={<Plus />}
+                  onClick={() => openWizard()}
+                  onPointerEnter={warmWizard}
+                  onFocus={warmWizard}
+                  aria-haspopup="dialog"
+                >
+                  {t("providers.add")}
+                </GlowButton>
+              </div>
+            </div>
+          </MenuFrame>
+        ) : (
+          <ProviderManager
+            providers={viewProviders}
+            routers={viewRouters}
+            lang={lang}
+            pingingAll={pingingAll || anyWorking}
+            working={working}
+            onAddProvider={() => openWizard()}
+            onWarmAddProvider={warmWizard}
+            onPingAll={() => void runPingAll()}
+            onToggleProvider={(providerId) => {
+              const target = providerMap.get(providerId);
+              if (target) void setProviderEnabled(providerId, !target.enabled);
+            }}
+            onPingProvider={async (providerId) => {
+              const target = providerMap.get(providerId);
+              if (!target) return;
+              const result = await pingOne(providerId);
+              if (result.ok) toast.success(`${target.name}: ${result.latencyMs}ms`);
+              else toast.error(`${target.name}: ${result.message ?? result.kind}`);
+            }}
+            onEditProvider={(providerId) => openWizard(providerId)}
+            onCopyBaseUrl={(_providerId, baseUrl) => {
+              void copyToClipboard(baseUrl).then((ok) =>
+                ok ? toast.success(t("toast.copied")) : toast.error(t("toast.clipboardFailed")),
+              );
+            }}
+            onToggleFavorite={(providerId) => {
+              const target = providerMap.get(providerId);
+              if (target) void setProviderFavorite(providerId, !target.favorite);
+            }}
+            onDuplicateProvider={(providerId) => void duplicateProvider(providerId)}
+            onDeleteProvider={(providerId) => {
+              const target = providerMap.get(providerId);
+              if (target) setConfirmDeleteProvider(target);
+            }}
+            onToggleModel={(_providerId, modelId) => {
+              const target = modelMap.get(modelId);
+              if (target) void updateModel(modelId, { enabled: !target.enabled });
+            }}
+            onPingModel={async (_providerId, modelId) => {
+              const result = await pingModelById(modelId);
+              if (!result) return;
+              if (result.ok) toast.success(t("providers.testOk", { ms: result.latencyMs }));
+              else toast.error(`${t("providers.testFail")}: ${result.message ?? result.kind}`);
+            }}
+            onEditModel={(_providerId, modelId) => {
+              const target = modelMap.get(modelId);
+              if (!target) return;
+              setEditingModel(target);
+              setEditorOpen(true);
+            }}
+            onDeleteModel={(_providerId, modelId) => void deleteModel(modelId)}
+            onAddModel={async (providerId, rawModelId) => {
+              const count = await addModels(providerId, [{ modelId: rawModelId, source: "manual" }]);
+              if (count > 0) toast.success(t("toast.modelAdded"));
+            }}
+            onCreateRouter={async (providerId, name) => {
+              const provider = providerMap.get(providerId);
+              if (!provider) throw new Error(t("common.error"));
+              const res = await createLocalRouter({
+                provider,
+                name,
+                allModels: models,
+                extraModelNames: catalogModels.flatMap((m) => [m.id, m.displayName]),
+              });
+              if (!res.ok) throw new Error(res.error);
+              toast.success(t("router.created"));
+            }}
+            onCreateMultiRouter={async (providerIds, name) => {
+              const selectedProviders = providerIds
+                .map((pid) => providerMap.get(pid))
+                .filter((p): p is Provider => Boolean(p));
+              const res = await createLocalRouter({
+                providers: selectedProviders,
+                name,
+                allModels: models,
+                extraModelNames: catalogModels.flatMap((m) => [m.id, m.displayName]),
+              });
+              if (!res.ok) throw new Error(res.error);
+              toast.success(t("router.created"));
+            }}
+            onToggleRouter={(routerId, enabled) => void toggleLocalRouter(routerId, enabled)}
+            onDeleteRouter={(routerId) => {
+              void deleteLocalRouter(routerId);
+              toast.success(t("router.deleted"));
+            }}
+          />
+        )}
       </div>
 
       <ModelEditor model={editingModel} open={editorOpen} onOpenChange={setEditorOpen} />
+
+      <ConfirmDialog
+        open={Boolean(confirmDeleteProvider)}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteProvider(null);
+        }}
+        title={t("common.delete")}
+        description={
+          confirmDeleteProvider ? t("providers.deleteConfirm", { name: confirmDeleteProvider.name }) : ""
+        }
+        confirmLabel={t("common.delete")}
+        cancelLabel={t("common.cancel")}
+        destructive
+        onConfirm={async () => {
+          if (!confirmDeleteProvider) return;
+          await deleteProvider(confirmDeleteProvider.id);
+          setConfirmDeleteProvider(null);
+          toast.success(t("providers.deleted"));
+        }}
+      />
     </div>
   );
 }

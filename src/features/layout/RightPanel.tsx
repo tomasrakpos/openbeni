@@ -1,4 +1,5 @@
 // layout feature: RightPanel; change its UI/flow here and keep related state/API calls in sync.
+import "@/styles/jetbrains-mono.css";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
@@ -17,6 +18,7 @@ import {
   Maximize2,
   Monitor,
   PanelRightClose,
+  Redo2,
   RefreshCw,
   RotateCcw,
   Save,
@@ -24,10 +26,12 @@ import {
   Tablet,
   Terminal,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import { CopyButton } from "@/components/CopyButton";
+import { AsciiAquarium } from "@/components/ui/ascii-aquarium";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { db } from "@/db";
@@ -50,7 +54,6 @@ import { activeThread, useChatsStore } from "@/stores/chats";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore, type PreviewDevice, type RightTab } from "@/stores/ui";
 import {
-  buildPreviewHtml,
   extractProjectFiles,
   extractStreamingProjectFiles,
   fileTree,
@@ -58,13 +61,14 @@ import {
   type ChatArtifactSplit,
   type TreeNode,
 } from "@/lib/codefiles";
+import { buildPreviewHtml } from "@/lib/previewHtml";
 import { diffLines, diffStat } from "@/lib/diff";
 import { copyToClipboard, downloadText, downloadZip, safeFilename } from "@/lib/export";
 import { useT } from "@/lib/i18n";
 import { uid } from "@/lib/id";
 import { formatRelativeTime } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
-import type { Chat, Message, ProjectVersion, VirtualFile } from "@/lib/types";
+import type { Chat, ElementEditContext, Message, ProjectVersion, VirtualFile } from "@/lib/types";
 
 interface ConsoleLine {
   type: "log" | "warn" | "error" | "info" | "debug";
@@ -287,6 +291,7 @@ function PreviewPane() {
   const setPreviewDevice = useUiStore((s) => s.setPreviewDevice);
   const setRightTab = useUiStore((s) => s.setRightTab);
   const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
+  const skillMode = useUiStore((s) => s.skillMode);
   const [consoleOpen, setConsoleOpen] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [lines, setLines] = React.useState<ConsoleLine[]>([]);
@@ -297,6 +302,11 @@ function PreviewPane() {
   const [capturing, setCapturing] = React.useState(false);
   const [captureCount, setCaptureCount] = React.useState(0);
   const [aiSubmitting, setAiSubmitting] = React.useState(false);
+  const [canUndo, setCanUndo] = React.useState(false);
+  const [canRedo, setCanRedo] = React.useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = React.useState(false);
+  const [savingManual, setSavingManual] = React.useState(false);
+  const [copiedStyle, setCopiedStyle] = React.useState<ElementStylePatch | null>(null);
   const pendingCaptureIdRef = React.useRef<string | null>(null);
   const pendingExportIdRef = React.useRef<string | null>(null);
   const captureSeqRef = React.useRef(0);
@@ -307,11 +317,33 @@ function PreviewPane() {
     iframeRef.current?.contentWindow?.postMessage({ __ohStudio: true, ...payload }, "*");
   }, []);
 
+  const flushPendingPatch = React.useCallback(() => {
+    if (patchRafRef.current) {
+      window.cancelAnimationFrame(patchRafRef.current);
+      patchRafRef.current = 0;
+    }
+    const merged = pendingPatchRef.current;
+    pendingPatchRef.current = null;
+    if (merged) {
+      postToIframe({ type: "apply-style", patch: merged });
+      return true;
+    }
+    return false;
+  }, [postToIframe]);
+
   React.useEffect(() => {
     return () => {
       if (patchRafRef.current) window.cancelAnimationFrame(patchRafRef.current);
     };
   }, []);
+
+  React.useEffect(() => {
+    setCanUndo(false);
+    setCanRedo(false);
+    setHasUnsavedChanges(false);
+    setSavingManual(false);
+    setSelectedElement(null);
+  }, [selected?.message.id, restored?.versionId, previewDevice]);
 
   // Sync active studio mode into the preview iframe whenever mode changes.
   React.useEffect(() => {
@@ -324,21 +356,84 @@ function PreviewPane() {
     }
   }, [studioMode, postToIframe]);
 
-  // Esc closes open element drawer first, then exits active studio mode.
+  // Keyboard shortcuts for Preview Studio: Esc, Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y, Ctrl/Cmd+S, Arrow nudge.
   React.useEffect(() => {
     if (studioMode === "off" && !selectedElement) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      const isTextInput = Boolean(
+        target &&
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.tagName === "SELECT" ||
+            target.isContentEditable),
+      );
+
+      if (event.key === "Escape") {
+        if (selectedElement) {
+          setSelectedElement(null);
+          postToIframe({ type: "clear-selection" });
+        } else {
+          setStudioMode("off");
+        }
+        return;
+      }
+
+      if (studioMode !== "manual-edit") return;
+
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        flushPendingPatch();
+        const requestId = uid("exp");
+        pendingExportIdRef.current = requestId;
+        setSavingManual(true);
+        window.requestAnimationFrame(() => {
+          postToIframe({ type: "export-html", requestId });
+        });
+        window.setTimeout(() => {
+          if (pendingExportIdRef.current === requestId) {
+            pendingExportIdRef.current = null;
+            setSavingManual(false);
+            toast.error(t("preview.studio.saveFailed"));
+          }
+        }, 4000);
+        return;
+      }
+
+      if (isTextInput) return;
+
+      if (mod && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        flushPendingPatch();
+        postToIframe({ type: event.shiftKey ? "redo" : "undo" });
+        return;
+      }
+
+      if (mod && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        flushPendingPatch();
+        postToIframe({ type: "redo" });
+        return;
+      }
+
       if (selectedElement) {
-        setSelectedElement(null);
-        postToIframe({ type: "clear-selection" });
-      } else {
-        setStudioMode("off");
+        const step = event.shiftKey ? 10 : 1;
+        let dx = 0;
+        let dy = 0;
+        if (event.key === "ArrowLeft") dx = -step;
+        else if (event.key === "ArrowRight") dx = step;
+        else if (event.key === "ArrowUp") dy = -step;
+        else if (event.key === "ArrowDown") dy = step;
+        if (dx !== 0 || dy !== 0) {
+          event.preventDefault();
+          postToIframe({ type: "nudge", dx, dy });
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [studioMode, selectedElement, postToIframe, setStudioMode]);
+  }, [studioMode, selectedElement, postToIframe, setStudioMode, flushPendingPatch, t]);
 
   React.useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -370,6 +465,23 @@ function PreviewPane() {
 
       if (data.type === "element-selected" && data.info) {
         setSelectedElement(data.info);
+        return;
+      }
+
+      if (data.type === "element-synced" && data.info) {
+        setSelectedElement((prev) => (prev ? { ...data.info, selectionKey: prev.selectionKey } : data.info));
+        return;
+      }
+
+      if (data.type === "selection-cleared") {
+        setSelectedElement(null);
+        return;
+      }
+
+      if (data.type === "history-state") {
+        setCanUndo(Boolean(data.canUndo));
+        setCanRedo(Boolean(data.canRedo));
+        setHasUnsavedChanges(Boolean(data.dirty));
         return;
       }
 
@@ -423,12 +535,17 @@ function PreviewPane() {
 
       if (data.type === "export-html-result" && data.requestId === pendingExportIdRef.current && data.html) {
         pendingExportIdRef.current = null;
-        void saveManualHtml(data.html).then(() => {
-          setSelectedElement(null);
-          setStudioMode("off");
-          postToIframe({ type: "clear-selection" });
-          toast.success(t("preview.studio.saved"));
-        });
+        void saveManualHtml(data.html)
+          .then(() => {
+            setSavingManual(false);
+            setHasUnsavedChanges(false);
+            postToIframe({ type: "mark-saved" });
+            toast.success(t("preview.studio.saved"));
+          })
+          .catch(() => {
+            setSavingManual(false);
+            toast.error(t("preview.studio.saveFailed"));
+          });
       }
     };
     window.addEventListener("message", onMessage);
@@ -440,6 +557,10 @@ function PreviewPane() {
   const reload = () => {
     setLines([]);
     setSelectedElement(null);
+    setCanUndo(false);
+    setCanRedo(false);
+    setHasUnsavedChanges(false);
+    setSavingManual(false);
     setReloadKey((value) => value + 1);
   };
 
@@ -467,31 +588,36 @@ function PreviewPane() {
         setAuthGateOpen(true);
         return;
       }
+      const trimmedInstruction = instruction.trim();
+      if (!trimmedInstruction) return;
+
       setAiSubmitting(true);
       const target = selectedElement;
-      const snippet = target.outerHtml.slice(0, 700);
-      const formattedPrompt = [
-        `Update ONLY this selected element in the current preview (keep everything else intact):`,
-        `- Element: \`${target.label}\``,
-        `- Selector: \`${target.selector}\``,
-        target.text ? `- Current text: "${target.text.slice(0, 120)}"` : null,
-        snippet ? `- Current HTML:\n\`\`\`html\n${snippet}\n\`\`\`` : null,
-        `\nRequested change:\n${instruction}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
+      const projectFiles = files.map((file) => ({
+        path: file.path,
+        language: file.language,
+        content: file.content,
+      }));
+      const editContext: ElementEditContext = {
+        label: target.label,
+        selector: target.selector,
+        tag: target.tag,
+        text: target.text?.trim() ? target.text.trim().slice(0, 120) : undefined,
+        outerHtml: target.outerHtml ? target.outerHtml.slice(0, 2400) : undefined,
+        ...(projectFiles.length > 0 ? { projectFiles } : {}),
+      };
 
       setSelectedElement(null);
       setStudioMode("off");
       postToIframe({ type: "clear-selection" });
       toast.success(t("preview.studio.aiSent"));
       try {
-        await useChatsStore.getState().send(formattedPrompt);
+        await useChatsStore.getState().send(trimmedInstruction, { editContext });
       } finally {
         setAiSubmitting(false);
       }
     },
-    [selectedElement, setAuthGateOpen, setStudioMode, postToIframe, t],
+    [selectedElement, files, setAuthGateOpen, setStudioMode, postToIframe, t],
   );
 
   // Coalesce high-frequency slider updates to 1 merged postMessage per animation frame.
@@ -510,40 +636,117 @@ function PreviewPane() {
   );
 
   const handleManualReset = React.useCallback(() => {
+    flushPendingPatch();
     postToIframe({ type: "reset-element" });
-  }, [postToIframe]);
+  }, [flushPendingPatch, postToIframe]);
+
+  const handleManualUndo = React.useCallback(() => {
+    flushPendingPatch();
+    postToIframe({ type: "undo" });
+  }, [flushPendingPatch, postToIframe]);
+
+  const handleManualRedo = React.useCallback(() => {
+    flushPendingPatch();
+    postToIframe({ type: "redo" });
+  }, [flushPendingPatch, postToIframe]);
+
+  const handleCopyStyle = React.useCallback(
+    (style: ElementStylePatch) => {
+      setCopiedStyle(style);
+      toast.success(t("preview.studio.styleCopied"));
+    },
+    [t],
+  );
+
+  const handlePasteStyle = React.useCallback(() => {
+    if (!copiedStyle || !selectedElement) return;
+    flushPendingPatch();
+    postToIframe({ type: "apply-style", patch: copiedStyle });
+    setSelectedElement((prev) =>
+      prev
+        ? {
+            ...prev,
+            selectionKey: `${prev.selectionKey}-p-${Date.now()}`,
+            styles: {
+              ...prev.styles,
+              fillMode: copiedStyle.fillMode ?? prev.styles.fillMode,
+              backgroundColor: copiedStyle.backgroundColor ?? prev.styles.backgroundColor,
+              gradientFrom: copiedStyle.gradientFrom ?? prev.styles.gradientFrom,
+              gradientTo: copiedStyle.gradientTo ?? prev.styles.gradientTo,
+              gradientAngle: copiedStyle.gradientAngle ?? prev.styles.gradientAngle,
+              color: copiedStyle.color ?? prev.styles.color,
+              fontSizePx: copiedStyle.fontSizePx ?? prev.styles.fontSizePx,
+              fontWeight: copiedStyle.fontWeight ?? prev.styles.fontWeight,
+              lineHeight: copiedStyle.lineHeight ?? prev.styles.lineHeight,
+              letterSpacingPx: copiedStyle.letterSpacingPx ?? prev.styles.letterSpacingPx,
+              italic: copiedStyle.italic ?? prev.styles.italic,
+              underline: copiedStyle.underline ?? prev.styles.underline,
+              strikethrough: copiedStyle.strikethrough ?? prev.styles.strikethrough,
+              textTransform: copiedStyle.textTransform ?? prev.styles.textTransform,
+              textShadow: copiedStyle.textShadow ?? prev.styles.textShadow,
+              borderRadiusPx: copiedStyle.borderRadiusPx ?? prev.styles.borderRadiusPx,
+              borderWidthPx: copiedStyle.borderWidthPx ?? prev.styles.borderWidthPx,
+              borderStyle: copiedStyle.borderStyle ?? prev.styles.borderStyle,
+              borderColor: copiedStyle.borderColor ?? prev.styles.borderColor,
+              paddingX: copiedStyle.paddingX ?? prev.styles.paddingX,
+              paddingY: copiedStyle.paddingY ?? prev.styles.paddingY,
+              opacityPct: copiedStyle.opacityPct ?? prev.styles.opacityPct,
+              shadowPreset: copiedStyle.shadowPreset ?? prev.styles.shadowPreset,
+              backdropBlurPx: copiedStyle.backdropBlurPx ?? prev.styles.backdropBlurPx,
+            },
+          }
+        : null,
+    );
+    toast.success(t("preview.studio.stylePasted"));
+  }, [copiedStyle, selectedElement, flushPendingPatch, postToIframe, t]);
 
   const handleSelectParent = React.useCallback(() => {
+    flushPendingPatch();
     postToIframe({ type: "select-parent" });
-  }, [postToIframe]);
+  }, [flushPendingPatch, postToIframe]);
 
   const handleReorder = React.useCallback(
     (dir: "up" | "down") => {
+      flushPendingPatch();
       postToIframe({ type: "reorder-element", dir });
     },
-    [postToIframe],
+    [flushPendingPatch, postToIframe],
   );
 
   const handleInjectCode = React.useCallback(
     (mode: CodeInjectMode, code: string) => {
+      flushPendingPatch();
       postToIframe({ type: "inject-code", mode, code });
     },
-    [postToIframe],
+    [flushPendingPatch, postToIframe],
   );
 
   const handleManualDuplicate = React.useCallback(() => {
+    flushPendingPatch();
     postToIframe({ type: "duplicate-element" });
-  }, [postToIframe]);
+  }, [flushPendingPatch, postToIframe]);
 
   const handleManualDelete = React.useCallback(() => {
+    flushPendingPatch();
     postToIframe({ type: "delete-element" });
-  }, [postToIframe]);
+  }, [flushPendingPatch, postToIframe]);
 
   const handleManualSave = React.useCallback(() => {
+    flushPendingPatch();
     const requestId = uid("exp");
     pendingExportIdRef.current = requestId;
-    postToIframe({ type: "export-html", requestId });
-  }, [postToIframe]);
+    setSavingManual(true);
+    window.requestAnimationFrame(() => {
+      postToIframe({ type: "export-html", requestId });
+    });
+    window.setTimeout(() => {
+      if (pendingExportIdRef.current === requestId) {
+        pendingExportIdRef.current = null;
+        setSavingManual(false);
+        toast.error(t("preview.studio.saveFailed"));
+      }
+    }, 4000);
+  }, [flushPendingPatch, postToIframe, t]);
 
   const closeElementPopover = React.useCallback(() => {
     setSelectedElement(null);
@@ -572,85 +775,77 @@ function PreviewPane() {
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
 
-  // While the model is actively building the selected preview (or hasn't closed
-  // the code fence yet), show a sleek live-building canvas inside the preview
-  // pane so users can swipe in immediately and watch progress in real time.
+  // While the model is actively building a website/project, fill the preview
+  // pane (desktop & mobile, any size) with the interactive ASCII Aquarium
+  // blended with the colorful glowing pixel-tiled OpenHarness mark. As soon as
+  // the build finishes, this hands back to the live rendered project preview.
   const showLiveBuilding = Boolean(
-    isStreamingActive && (!selected || selected.isStreaming) && streamingArtifact?.isBuilding,
+    isStreamingActive &&
+      streamingArtifact?.isBuilding &&
+      (!selected ||
+        selected.isStreaming ||
+        streamingArtifact.hasCode ||
+        skillMode === "website" ||
+        skillMode === "game"),
   );
 
   if (showLiveBuilding && streamingArtifact) {
+    const activeStep =
+      streamingArtifact.steps.find((step) => step.status === "active") ??
+      streamingArtifact.steps[streamingArtifact.steps.length - 1] ??
+      null;
+
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5 py-8">
-        <div className="w-full max-w-[360px] rounded-[18px] border border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_80%,transparent)] p-5 shadow-sm backdrop-blur-xl">
-          <div className="flex items-center gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-[12px] border border-[color-mix(in_oklab,var(--accent)_35%,transparent)] bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-[var(--accent)]">
-              <Loader2 className="size-4.5 animate-spin" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-[13.5px] font-semibold text-foreground">
-                {streamingArtifact.title}
-              </p>
-              <p className="mt-0.5 text-[11.5px] text-[var(--muted-foreground)]">
-                {t("preview.building")}
-              </p>
-            </div>
-            {streamingArtifact.totalLines > 0 ? (
-              <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 font-mono text-[10px] tabular-nums text-[var(--muted-foreground)]">
-                {t("preview.linesCount", { n: streamingArtifact.totalLines })}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-black">
+        <AsciiAquarium
+          className="flex-1"
+          style={{ width: "100%", height: "100%", minHeight: 0 }}
+          responsiveCells
+          logoSrc="/brand/openharness-mark.webp"
+          logoFallbackSrc="/brand/openharness-mark.png"
+          logoMode="colorful"
+          logoSweep
+          logoOpacity={0.92}
+          logoScale={0.58}
+          ariaLabel={t("preview.building")}
+        />
+
+        {/* Subtle bottom-edge progress strip; pointer-events stay open for the aquarium canvas. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-3.5 pt-10 pb-3.5 sm:px-4 sm:pb-4">
+          <div className="mx-auto flex w-full max-w-[440px] items-center justify-between gap-2.5 rounded-[12px] border border-white/10 bg-black/55 px-3 py-2 backdrop-blur-md">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="relative flex size-2.5 shrink-0 items-center justify-center">
+                <span className="absolute inline-flex size-2.5 animate-ping rounded-full bg-white/45" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-white/85" />
               </span>
-            ) : null}
+              <div className="min-w-0">
+                <p className="truncate font-mono text-[11.5px] font-medium text-white/90">
+                  {streamingArtifact.title}
+                </p>
+                <p className="truncate font-mono text-[10px] text-white/55">
+                  {activeStep?.label ?? t("preview.building")}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1.5">
+              {streamingArtifact.totalLines > 0 ? (
+                <span className="rounded-md border border-white/10 bg-white/[0.06] px-1.5 py-0.5 font-mono text-[9.5px] tabular-nums text-white/65">
+                  {t("preview.linesCount", { n: streamingArtifact.totalLines })}
+                </span>
+              ) : null}
+              {streamingArtifact.files.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setRightTab("files")}
+                  className="pointer-events-auto inline-flex h-6 items-center gap-1 rounded-md border border-white/15 bg-white/[0.08] px-2 font-mono text-[10px] font-medium text-white/85 transition-colors hover:bg-white/[0.15]"
+                >
+                  <Code2 className="size-3" />
+                  <span className="hidden xs:inline sm:inline">{t("preview.viewCode")}</span>
+                </button>
+              ) : null}
+            </div>
           </div>
-
-          {streamingArtifact.steps.length > 0 ? (
-            <ul className="mt-4 space-y-2 border-t border-[var(--border)]/70 pt-3.5">
-              {streamingArtifact.steps.map((step) => (
-                <li key={step.id} className="flex items-center gap-2.5 text-[12px]">
-                  {step.status === "active" ? (
-                    <span className="relative flex size-4 shrink-0 items-center justify-center">
-                      <span className="absolute inline-flex size-3 animate-ping rounded-full bg-[var(--accent)]/45" />
-                      <span className="relative inline-flex size-1.5 rounded-full bg-[var(--accent)]" />
-                    </span>
-                  ) : step.status === "done" ? (
-                    <span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--success-soft)] text-[var(--success)]">
-                      <Check className="size-2.5 stroke-[2.5]" />
-                    </span>
-                  ) : (
-                    <span className="grid size-4 shrink-0 place-items-center">
-                      <span className="size-2 rounded-full border border-[var(--border-strong)]" />
-                    </span>
-                  )}
-                  <span
-                    className={cn(
-                      "min-w-0 truncate transition-colors",
-                      step.status === "active"
-                        ? "font-medium text-foreground"
-                        : step.status === "done"
-                          ? "text-[var(--muted-foreground)]"
-                          : "text-[var(--faint)]",
-                    )}
-                  >
-                    {step.label}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-
-          <p className="mt-4 text-[11px] leading-relaxed text-[var(--faint)]">
-            {t("preview.buildingHint")}
-          </p>
-
-          {streamingArtifact.files.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => setRightTab("files")}
-              className="mt-3.5 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)]/75 px-3 text-[11.5px] font-medium text-foreground transition-colors hover:bg-[var(--surface-2)]"
-            >
-              <Code2 className="size-3.5" />
-              <span>{t("preview.viewCode")}</span>
-            </button>
-          ) : null}
         </div>
       </div>
     );
@@ -811,6 +1006,8 @@ function PreviewPane() {
             element={selectedElement}
             submitting={aiSubmitting}
             onSubmit={(instruction) => void handleAiElementSubmit(instruction)}
+            onSelectParent={handleSelectParent}
+            onSwitchToManual={() => setStudioMode("manual-edit")}
             onClose={closeElementPopover}
           />
         ) : null}
@@ -828,7 +1025,71 @@ function PreviewPane() {
             onDelete={handleManualDelete}
             onSave={handleManualSave}
             onClose={closeManualEditor}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            hasUnsavedChanges={hasUnsavedChanges}
+            saving={savingManual}
+            onUndo={handleManualUndo}
+            onRedo={handleManualRedo}
+            copiedStyle={copiedStyle}
+            onCopyStyle={handleCopyStyle}
+            onPasteStyle={handlePasteStyle}
+            onSwitchToAi={() => {
+              flushPendingPatch();
+              setStudioMode("ai-pick");
+            }}
           />
+        ) : null}
+
+        {studioMode === "manual-edit" && !selectedElement && (canUndo || canRedo || hasUnsavedChanges) ? (
+          <motion.div
+            key="manual-session-bar"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.18 }}
+            className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border)] bg-[color-mix(in_oklab,var(--surface-1)_88%,transparent)] px-3 py-1.5 backdrop-blur-md"
+          >
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleManualUndo}
+                disabled={!canUndo}
+                title={`${t("preview.studio.undo")} (Ctrl+Z)`}
+                className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 text-[10.5px] font-medium text-foreground transition-colors hover:border-[var(--primary)]/50 disabled:pointer-events-none disabled:opacity-40"
+              >
+                <Undo2 className="size-3" />
+                <span>{t("preview.studio.undo")}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleManualRedo}
+                disabled={!canRedo}
+                title={`${t("preview.studio.redo")} (Ctrl+Shift+Z)`}
+                className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 text-[10.5px] font-medium text-foreground transition-colors hover:border-[var(--primary)]/50 disabled:pointer-events-none disabled:opacity-40"
+              >
+                <Redo2 className="size-3" />
+                <span>{t("preview.studio.redo")}</span>
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {hasUnsavedChanges ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-[var(--primary-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--primary)]">
+                  <span className="size-1.5 rounded-full bg-[var(--primary)]" />
+                  {t("preview.studio.unsaved")}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                disabled={savingManual}
+                onClick={handleManualSave}
+                className="inline-flex h-7 items-center gap-1 rounded-full bg-[var(--primary)] px-3 text-[11px] font-semibold text-white shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                <Check className="size-3" />
+                <span>{t("preview.studio.save")}</span>
+              </button>
+            </div>
+          </motion.div>
         ) : null}
       </AnimatePresence>
 

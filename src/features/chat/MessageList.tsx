@@ -1,6 +1,7 @@
 // chat feature: MessageList; change its UI/flow here and keep related state/API calls in sync.
 import { ArrowDown } from "lucide-react";
 import * as React from "react";
+import { ChatAutoScrollController } from "@/features/chat/autoScroll";
 import { EmptyState } from "@/features/chat/EmptyState";
 import { useT } from "@/lib/i18n";
 import { loadMessageItem } from "@/lib/preload";
@@ -16,58 +17,169 @@ export function MessageList() {
   const streaming = useChatsStore((s) => s.streaming);
   const chat = chats.find((c) => c.id === activeChatId) ?? null;
   const thread = React.useMemo(() => activeThread(messages, chat), [messages, chat]);
+
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const contentRef = React.useRef<HTMLDivElement>(null);
-  const stickRef = React.useRef(true);
+  const ctrlRef = React.useRef<ChatAutoScrollController | null>(null);
+  if (!ctrlRef.current) ctrlRef.current = new ChatAutoScrollController();
+  const rafIdRef = React.useRef<number | null>(null);
+  const prevThreadLenRef = React.useRef(thread.length);
   const [atBottom, setAtBottom] = React.useState(true);
 
-  const scrollToBottom = React.useCallback((behavior: ScrollBehavior = "auto") => {
-    const node = scrollRef.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior });
-    stickRef.current = true;
-    setAtBottom(true);
+  const syncAtBottom = React.useCallback((next: boolean) => {
+    setAtBottom((prev) => (prev === next ? prev : next));
+  }, []);
+
+  const cancelPendingFollow = React.useCallback(() => {
+    if (rafIdRef.current !== null) {
+      window.cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+  }, []);
+
+  const scrollToBottom = React.useCallback(
+    (behavior: ScrollBehavior = "auto") => {
+      const node = scrollRef.current;
+      const ctrl = ctrlRef.current!;
+      if (!node) return;
+      cancelPendingFollow();
+      const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+      if (behavior === "smooth") {
+        ctrl.markProgrammaticScroll(maxScroll, 500, performance.now());
+        node.scrollTo({ top: maxScroll, behavior: "smooth" });
+      } else {
+        ctrl.markProgrammaticScroll(maxScroll, 80, performance.now());
+        node.scrollTop = maxScroll;
+      }
+      syncAtBottom(true);
+    },
+    [cancelPendingFollow, syncAtBottom],
+  );
+
+  // Coalesce rapid streaming / ResizeObserver updates into a single rAF per frame
+  // and never hijack scroll while the user is touching, dragging, or has scrolled up.
+  const scheduleFollowBottom = React.useCallback(() => {
+    const ctrl = ctrlRef.current!;
+    if (!ctrl.canFollow()) return;
+    if (rafIdRef.current !== null) return;
+    rafIdRef.current = window.requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      const node = scrollRef.current;
+      if (!node || !ctrl.canFollow()) return;
+      const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+      if (maxScroll - node.scrollTop <= 1) return;
+      ctrl.markProgrammaticScroll(maxScroll, 80, performance.now());
+      node.scrollTop = maxScroll;
+    });
+  }, []);
+
+  React.useEffect(() => cancelPendingFollow, [cancelPendingFollow]);
+
+  // Clear scrollbar drag state even if pointer is released outside the scroller.
+  React.useEffect(() => {
+    const endDrag = () => {
+      ctrlRef.current?.onScrollbarDragEnd();
+    };
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    return () => {
+      window.removeEventListener("pointerup", endDrag);
+      window.removeEventListener("pointercancel", endDrag);
+    };
   }, []);
 
   // A new conversation always opens at its newest message.
   React.useLayoutEffect(() => {
-    stickRef.current = true;
-    setAtBottom(true);
+    prevThreadLenRef.current = thread.length;
+    const node = scrollRef.current;
+    const maxScroll = node ? Math.max(0, node.scrollHeight - node.clientHeight) : 0;
+    ctrlRef.current!.resetForChat(maxScroll, performance.now());
+    syncAtBottom(true);
     scrollToBottom("auto");
-  }, [activeChatId, scrollToBottom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChatId, scrollToBottom, syncAtBottom]);
 
-  // Sending (or receiving) a message pins the thread to the bottom.
+  // Sending a new user message pins the thread to the bottom; otherwise only
+  // follow if the reader was already anchored at the tail.
   React.useLayoutEffect(() => {
-    scrollToBottom("auto");
-  }, [thread.length, scrollToBottom]);
+    const prevLen = prevThreadLenRef.current;
+    prevThreadLenRef.current = thread.length;
+    if (thread.length === 0) return;
+    const latest = thread[thread.length - 1];
+    const userJustSent = thread.length > prevLen && latest?.role === "user";
+    if (userJustSent) {
+      scrollToBottom("auto");
+    } else if (ctrlRef.current!.canFollow()) {
+      scheduleFollowBottom();
+    }
+  }, [thread, scrollToBottom, scheduleFollowBottom]);
 
-  // While streaming, follow the tail only when the reader is already there.
+  // While streaming, follow the tail only when the reader is still anchored there.
   React.useLayoutEffect(() => {
-    if (stickRef.current) scrollToBottom("auto");
-  }, [streaming?.content, streaming?.reasoning, scrollToBottom]);
+    if (ctrlRef.current!.canFollow()) scheduleFollowBottom();
+  }, [streaming?.content, streaming?.reasoning, scheduleFollowBottom]);
 
   /*
-   * Bubble heights and the composer padding settle after layout (code blocks,
-   * images, the glass height itself). Observing the content means the last
-   * message is never left hidden below the fold.
+   * Bubble heights and the composer padding settle after layout (artifact build
+   * steps, code blocks, images, the glass height itself). Follow smoothly only
+   * when anchored and the user is not actively interacting with the scroller.
    */
   React.useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
     const observer = new ResizeObserver(() => {
-      if (stickRef.current) scrollToBottom("auto");
+      if (ctrlRef.current!.canFollow()) scheduleFollowBottom();
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [thread.length, scrollToBottom]);
+  }, [thread.length, scheduleFollowBottom]);
+
+  const onWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (ctrlRef.current!.onWheel(event.deltaY)) {
+      cancelPendingFollow();
+      syncAtBottom(false);
+    }
+  };
+
+  const onTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    cancelPendingFollow();
+    ctrlRef.current!.onTouchStart(event.touches[0]?.clientY ?? null);
+  };
+
+  const onTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (ctrlRef.current!.onTouchMove(event.touches[0]?.clientY ?? null)) {
+      cancelPendingFollow();
+      syncAtBottom(false);
+    }
+  };
+
+  const onTouchEnd = () => {
+    ctrlRef.current!.onTouchEnd();
+  };
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "mouse") return;
+    const node = scrollRef.current;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    const scrollbarWidth = node.offsetWidth - node.clientWidth;
+    if (scrollbarWidth > 0 && event.clientX >= rect.right - scrollbarWidth - 6) {
+      cancelPendingFollow();
+      ctrlRef.current!.onScrollbarDragStart();
+    }
+  };
 
   const onScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
-    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    const nearBottom = distance < 120;
-    stickRef.current = nearBottom;
-    setAtBottom(nearBottom);
+    const snap = ctrlRef.current!.onScroll(
+      node.scrollTop,
+      node.scrollHeight,
+      node.clientHeight,
+      performance.now(),
+    );
+    if (!snap.stick) cancelPendingFollow();
+    syncAtBottom(snap.atBottom);
   };
 
   if (thread.length === 0) {
@@ -83,7 +195,13 @@ export function MessageList() {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain"
+        onWheel={onWheel}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onTouchCancel={onTouchEnd}
+        onPointerDown={onPointerDown}
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
         role="log"
         aria-live="polite"
         aria-label={t("chat.conversation")}

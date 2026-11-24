@@ -3,7 +3,7 @@ import type { PromptComposerModel } from "@/components/ui/prompt-composer";
 import { isBundledProvider, providerDisplayName } from "@/lib/bundled";
 import { isSameModel, modelIdentityKeys } from "@/lib/modelRoutes";
 import { effectiveTier, tierSortRank } from "@/lib/registry";
-import type { CombinedRouterItem } from "@/stores/routers";
+import { isAdminPublicRouter, type CombinedRouterItem } from "@/stores/routers";
 import type { AIModel, Provider } from "@/lib/types";
 
 /**
@@ -27,10 +27,27 @@ export function buildComposerModels(
   );
   const providerRank = new Map(orderedProviders.map((provider, idx) => [provider.id, idx]));
 
-  const routerOptions: PromptComposerModel[] = routers
-    .filter((r) => r.enabled)
-    .map((r) => {
-      const empty = r.activeMemberCount === 0;
+  const userRouterOptions: PromptComposerModel[] = [];
+  const adminNativeOptions: PromptComposerModel[] = [];
+
+  for (const r of routers) {
+    if (!r.enabled) continue;
+    const empty = r.activeMemberCount === 0;
+    if (isAdminPublicRouter(r)) {
+      // Admin public routers appear on the public site as native OpenHarneks
+      // models: custom admin name + native brand icon, no router badge/icon
+      // and no underlying provider or member count exposed.
+      adminNativeOptions.push({
+        id: r.selectionId,
+        label: r.name,
+        note: "OpenHarneks",
+        tier: "free",
+        userAdded: false,
+        isRouter: false,
+        isNativeBrand: true,
+        disabled: empty,
+      });
+    } else {
       const countText = empty
         ? lang === "fa"
           ? "بدون مدل فعال"
@@ -38,17 +55,18 @@ export function buildComposerModels(
         : lang === "fa"
           ? `${r.activeMemberCount} مدل فعال`
           : `${r.activeMemberCount} active`;
-      return {
+      userRouterOptions.push({
         id: r.selectionId,
         label: r.name,
         note: countText,
         tier: "free",
-        userAdded: r.ownerScope === "user",
+        userAdded: true,
         isRouter: true,
         routerActiveCount: r.activeMemberCount,
         disabled: empty,
-      };
-    });
+      });
+    }
+  }
 
   const seen = new Set<string>();
   const collected: {
@@ -97,7 +115,7 @@ export function buildComposerModels(
       a.order - b.order,
   );
 
-  return [...routerOptions, ...collected.map((entry) => entry.option)];
+  return [...userRouterOptions, ...adminNativeOptions, ...collected.map((entry) => entry.option)];
 }
 
 /**

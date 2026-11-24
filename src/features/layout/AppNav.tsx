@@ -1,27 +1,39 @@
 // layout feature: AppNav; change its UI/flow here and keep related state/API calls in sync.
-import { MessageSquare, Search, Server, Settings } from "lucide-react";
+import {
+  Cpu,
+  MessageSquare,
+  Search,
+  Server,
+  Settings,
+  SquarePen,
+} from "lucide-react";
 import * as React from "react";
+import {
+  AppleSpotlight,
+  type SpotlightSearchResult,
+  type SpotlightShortcut,
+} from "@/components/ui/apple-spotlight";
 import {
   LiquidNavbar,
   type LiquidNavItem,
 } from "@/components/ui/liquid-glass-navbar";
 import { CreditJellyGauge } from "@/features/layout/CreditJellyGauge";
-import { snippet, useChatSearch, type SearchHit } from "@/features/layout/useChatSearch";
+import { snippet, useChatSearch } from "@/features/layout/useChatSearch";
+import { isBundledProvider } from "@/lib/bundled";
 import { useT } from "@/lib/i18n";
 import { formatRelativeTime } from "@/lib/tokens";
+import { cn } from "@/lib/utils";
+import { useAllModels, useAllProviders } from "@/stores/catalog";
 import { useChatsStore } from "@/stores/chats";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
 /**
- * Main navigation pill. It reuses the composer's liquid-glass material and the
- * water physics of the Nimbus navbar: the active drop glides between Chats and
- * Providers, while Search and Settings act as one-shot destinations that open
- * their dialogs without stealing the indicator.
- *
- * Search is different: it morphs the pill itself into a field. The icon lifts
- * out of its item and lands in the trailing bubble while the water drop travels
- * to the same corner, then results stream in right under the pill.
+ * Main navigation pill. Normally displays the liquid-glass Nimbus navbar; tapping
+ * Search fades out the TopBar corner menus, slides the navbar pill itself to the
+ * right while morphing it into the AppleSpotlight search bar (with 4 shortcut orbs
+ * on the left and live search results below), and reverses the entire animation on
+ * Back / Esc / outside click.
  */
 
 function useMediaQuery(query: string): boolean {
@@ -45,19 +57,26 @@ export function AppNav({ className }: { className?: string }) {
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
   const searchDialogOpen = useUiStore((s) => s.searchOpen);
+  const navSearchOpen = useUiStore((s) => s.navSearchOpen);
+  const setNavSearchOpen = useUiStore((s) => s.setNavSearchOpen);
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const theme = useSettingsStore((s) => s.settings.theme);
   const lang = useSettingsStore((s) => s.settings.lang);
   const wide = useMediaQuery("(min-width: 1280px)");
+  const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
+
+  const resolvedTone: "light" | "dark" =
+    theme === "dark" || (theme === "system" && prefersDark) ? "dark" : "light";
 
   const selectChat = useChatsStore((s) => s.selectChat);
+  const createChat = useChatsStore((s) => s.createChat);
   const chats = useChatsStore((s) => s.chats);
+  const providers = useAllProviders();
+  const models = useAllModels();
 
   const [searchMode, setSearchMode] = React.useState(false);
   const [query, setQuery] = React.useState("");
-  const inputRef = React.useRef<HTMLInputElement>(null);
-  const wrapRef = React.useRef<HTMLDivElement>(null);
-  const { results, loading } = useChatSearch(query, searchMode);
+  const { results: messageHits, loading } = useChatSearch(query, searchMode);
 
   const closeSearch = React.useCallback(() => {
     setSearchMode(false);
@@ -69,33 +88,15 @@ export function AppNav({ className }: { className?: string }) {
     setSearchMode(true);
   }, []);
 
-  // Focus must wait for the input to become interactive (the slot is always
-  // mounted so the glass never re-lays-out during the morph).
+  // Ensure TopBar chrome is restored if AppNav ever unmounts during search.
   React.useEffect(() => {
-    if (!searchMode) return;
-    const raf = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(raf);
-  }, [searchMode]);
+    return () => setNavSearchOpen(false);
+  }, [setNavSearchOpen]);
 
-  React.useEffect(() => {
-    if (searchMode) return;
-    if (document.activeElement === inputRef.current) inputRef.current?.blur();
-  }, [searchMode]);
-
-  // The global search dialog (⌘K) takes over: retire the inline field.
+  // The global search dialog (⌘K) takes over: retire the spotlight bar.
   React.useEffect(() => {
     if (searchDialogOpen) closeSearch();
   }, [searchDialogOpen, closeSearch]);
-
-  // Click-away closes the inline search, including the results panel.
-  React.useEffect(() => {
-    if (!searchMode) return;
-    const onDown = (event: PointerEvent) => {
-      if (!wrapRef.current?.contains(event.target as Node)) closeSearch();
-    };
-    document.addEventListener("pointerdown", onDown);
-    return () => document.removeEventListener("pointerdown", onDown);
-  }, [searchMode, closeSearch]);
 
   const items = React.useMemo<LiquidNavItem[]>(
     () => [
@@ -114,117 +115,251 @@ export function AppNav({ className }: { className?: string }) {
     else setSettingsOpen(true);
   };
 
-  const openHit = async (hit: SearchHit) => {
-    closeSearch();
-    setView("chat");
-    await selectChat(hit.chat.id);
-  };
+  // 4 left-aligned spotlight shortcut orbs
+  const spotlightShortcuts = React.useMemo<SpotlightShortcut[]>(
+    () => [
+      {
+        id: "chats",
+        label: t("nav.chats"),
+        icon: <MessageSquare />,
+        onSelect: () => {
+          closeSearch();
+          setView("chat");
+        },
+      },
+      {
+        id: "new-chat",
+        label: t("chat.new"),
+        icon: <SquarePen />,
+        onSelect: () => {
+          closeSearch();
+          setView("chat");
+          void createChat();
+        },
+      },
+      {
+        id: "providers",
+        label: t("nav.providers"),
+        icon: <Server />,
+        onSelect: () => {
+          closeSearch();
+          setView("providers");
+        },
+      },
+      {
+        id: "settings",
+        label: t("nav.settings"),
+        icon: <Settings />,
+        onSelect: () => {
+          closeSearch();
+          setSettingsOpen(true);
+        },
+      },
+    ],
+    [t, closeSearch, setView, createChat, setSettingsOpen],
+  );
 
-  const showPanel = searchMode && query.trim().length > 0;
-  const trimmed = query.trim();
+  const spotlightResults = React.useMemo<SpotlightSearchResult[]>(() => {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const needle = trimmed.toLowerCase();
+    const out: SpotlightSearchResult[] = [];
+    const seenChatIds = new Set<string>();
+
+    // 1. Matching message hits across all chats
+    for (const hit of messageHits.slice(0, 8)) {
+      const parts = snippet(hit.message.content, trimmed);
+      const previewText = `${parts.before}${parts.match}${parts.after}`.replace(/\s+/g, " ").trim();
+      seenChatIds.add(hit.chat.id);
+      out.push({
+        id: `msg-${hit.message.id}`,
+        icon: <MessageSquare />,
+        label: hit.chat.title || t("chat.newChatTitle"),
+        description: previewText,
+        meta: formatRelativeTime(hit.message.createdAt, lang),
+        onSelect: () => {
+          closeSearch();
+          setView("chat");
+          void selectChat(hit.chat.id);
+        },
+      });
+    }
+
+    // 2. Matching chat titles not already listed from message content
+    for (const chat of chats) {
+      if (out.length >= 12) break;
+      if (seenChatIds.has(chat.id)) continue;
+      const title = chat.title || t("chat.newChatTitle");
+      if (!title.toLowerCase().includes(needle)) continue;
+      seenChatIds.add(chat.id);
+      out.push({
+        id: `chat-${chat.id}`,
+        icon: <MessageSquare />,
+        label: title,
+        description: t("nav.chats"),
+        meta: formatRelativeTime(chat.updatedAt, lang),
+        onSelect: () => {
+          closeSearch();
+          setView("chat");
+          void selectChat(chat.id);
+        },
+      });
+    }
+
+    // 3. Matching user providers
+    for (const provider of providers) {
+      if (out.length >= 14) break;
+      if (isBundledProvider(provider)) continue;
+      if (
+        !provider.name.toLowerCase().includes(needle) &&
+        !provider.baseUrl.toLowerCase().includes(needle)
+      ) {
+        continue;
+      }
+      out.push({
+        id: `provider-${provider.id}`,
+        icon: <Server />,
+        label: provider.name,
+        description: provider.baseUrl.replace(/^https?:\/\//, ""),
+        meta: t("nav.providers"),
+        onSelect: () => {
+          closeSearch();
+          setView("providers");
+        },
+      });
+    }
+
+    // 4. Matching enabled models
+    for (const model of models) {
+      if (out.length >= 16) break;
+      if (!model.enabled) continue;
+      if (
+        !model.displayName.toLowerCase().includes(needle) &&
+        !model.modelId.toLowerCase().includes(needle)
+      ) {
+        continue;
+      }
+      out.push({
+        id: `model-${model.id}`,
+        icon: <Cpu />,
+        label: model.displayName,
+        description: model.modelId,
+        meta: t("nav.models"),
+        onSelect: () => {
+          closeSearch();
+          setView("providers");
+        },
+      });
+    }
+
+    // 5. Quick navigation actions matching query
+    const quickActions = [
+      {
+        id: "act-new",
+        keywords: [t("chat.new"), "new chat", "گفتگوی جدید", "جدید"],
+        label: t("chat.new"),
+        description: t("nav.chats"),
+        icon: <SquarePen />,
+        run: () => {
+          closeSearch();
+          setView("chat");
+          void createChat();
+        },
+      },
+      {
+        id: "act-providers",
+        keywords: [t("nav.providers"), "providers", "models", "پرووایدر", "مدل"],
+        label: t("nav.providers"),
+        description: t("providers.subtitle"),
+        icon: <Server />,
+        run: () => {
+          closeSearch();
+          setView("providers");
+        },
+      },
+      {
+        id: "act-settings",
+        keywords: [t("nav.settings"), "settings", "theme", "تنظیمات", "تم"],
+        label: t("nav.settings"),
+        description: t("settings.appearance"),
+        icon: <Settings />,
+        run: () => {
+          closeSearch();
+          setSettingsOpen(true);
+        },
+      },
+    ];
+
+    for (const act of quickActions) {
+      if (act.keywords.some((k) => k.toLowerCase().includes(needle))) {
+        out.push({
+          id: act.id,
+          icon: act.icon,
+          label: act.label,
+          description: act.description,
+          onSelect: act.run,
+        });
+      }
+    }
+
+    return out;
+  }, [
+    query,
+    messageHits,
+    chats,
+    providers,
+    models,
+    lang,
+    t,
+    closeSearch,
+    setView,
+    selectChat,
+    createChat,
+    setSettingsOpen,
+  ]);
+
+  const isFa = lang === "fa";
 
   return (
-    <div ref={wrapRef} className="relative flex shrink-0 justify-center">
-      <LiquidNavbar
-        className={className}
-        ariaLabel={t("app.name")}
-        items={items}
-        active={view === "chat" ? 0 : 1}
-        tone={theme === "dark" ? "dark" : "light"}
-        compact={!wide}
-        onChange={onSelect}
-        search={searchMode}
-        searchAnchor={SEARCH_INDEX}
-        searchIcon={<Search size={16} strokeWidth={1.9} />}
-        searchSlot={
-          <input
-            ref={inputRef}
-            type="search"
-            className="nimbus-searchinput"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                closeSearch();
-              }
-            }}
-            placeholder={t("chat.searchPlaceholder")}
-            aria-label={t("chat.searchPlaceholder")}
-            tabIndex={searchMode ? 0 : -1}
-            autoComplete="off"
-            spellCheck={false}
+    <div className="relative flex h-[42px] shrink-0 items-start justify-center">
+      <AppleSpotlight
+        navbar={
+          <LiquidNavbar
+            className={className}
+            ariaLabel={t("app.name")}
+            items={items}
+            active={view === "chat" ? 0 : 1}
+            tone={resolvedTone}
+            compact={!wide}
+            onChange={onSelect}
           />
         }
+        isOpen={searchMode}
+        handleClose={closeSearch}
+        onChromeFadeChange={setNavSearchOpen}
+        tone={resolvedTone}
+        wide={wide}
+        shortcuts={spotlightShortcuts}
+        searchResults={spotlightResults}
+        searchValue={query}
+        onSearchValueChange={setQuery}
+        loading={loading}
+        placeholder={t("chat.searchPlaceholder")}
+        backLabel={isFa ? "بازگشت" : "Back"}
+        clearLabel={isFa ? "پاک کردن" : "Clear"}
+        loadingLabel={t("common.loading")}
+        emptyLabel={t("chat.searchEmpty")}
       />
 
-      <CreditJellyGauge hidden={searchMode} />
-
-      {showPanel ? (
-        <div
-          className="absolute top-[calc(100%+10px)] left-1/2 z-50 w-[min(92vw,430px)] -translate-x-1/2 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[0_22px_48px_-18px_rgba(0,0,0,0.45)]"
-          role="region"
-          aria-label={t("nav.search")}
-        >
-          <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[var(--faint)]">
-              {t("nav.search")}
-            </span>
-            <span className="text-[10px] text-[var(--faint)]">
-              {loading ? t("common.loading") : `${results.length} · ${t("chat.searchResults")}`}
-            </span>
-          </div>
-
-          <div className="max-h-[min(52vh,320px)] overflow-y-auto p-1.5">
-            {loading ? (
-              <p className="px-3 py-6 text-center text-[11.5px] text-[var(--faint)]">{t("common.loading")}</p>
-            ) : results.length === 0 ? (
-              <p className="px-3 py-6 text-center text-[11.5px] text-[var(--faint)]">{t("chat.searchEmpty")}</p>
-            ) : (
-              <ul>
-                {results.slice(0, 8).map((hit) => {
-                  const parts = snippet(hit.message.content, trimmed);
-                  return (
-                    <li key={hit.message.id}>
-                      <button
-                        type="button"
-                        onClick={() => void openHit(hit)}
-                        className="flex w-full flex-col gap-1 rounded-[10px] px-2.5 py-2 text-start transition-colors hover:bg-[var(--surface-2)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--ring)]"
-                      >
-                        <span className="flex w-full items-center gap-1.5 text-[10px] text-[var(--faint)]">
-                          <MessageSquare className="size-2.5 shrink-0" />
-                          <span className="truncate font-semibold text-[var(--foreground-soft)]">
-                            {hit.chat.title || t("chat.newChatTitle")}
-                          </span>
-                          <span className="ml-auto shrink-0">
-                            {formatRelativeTime(hit.message.createdAt, lang)}
-                          </span>
-                        </span>
-                        <span className="line-clamp-2 text-[11.5px] leading-relaxed text-[var(--foreground-soft)]">
-                          {parts.before}
-                          <mark className="rounded-[3px] bg-[var(--primary-soft)] px-0.5 text-[var(--primary)]">
-                            {parts.match}
-                          </mark>
-                          {parts.after}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] px-3 py-1.5">
-            <span className="text-[9.5px] text-[var(--faint)]">
-              {results.length > 8 ? `+${results.length - 8}` : chats.length ? `${chats.length} · ${t("nav.chats")}` : ""}
-            </span>
-            <kbd className="rounded-[4px] border border-[var(--border)] px-1.5 py-0.5 font-mono text-[9px] text-[var(--faint)]">
-              Esc
-            </kbd>
-          </div>
-        </div>
-      ) : null}
+      <div
+        className={cn(
+          "transition-opacity duration-200 ease-out",
+          navSearchOpen && "pointer-events-none opacity-0",
+        )}
+        aria-hidden={navSearchOpen || undefined}
+      >
+        <CreditJellyGauge />
+      </div>
     </div>
   );
 }

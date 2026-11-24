@@ -1,10 +1,7 @@
 // App bootstrap: change app mounting and top-level view selection here.
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "@fontsource-variable/pixelify-sans";
-import "@fontsource-variable/inter";
-import "@fontsource-variable/vazirmatn";
-import "@fontsource-variable/jetbrains-mono";
+import "@/styles/fonts.css";
 import App from "@/App";
 import { ErrorBoundary } from "@/app/ErrorBoundary";
 import { TooltipProvider } from "@/components/ui/tooltip";

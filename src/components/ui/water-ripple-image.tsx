@@ -235,6 +235,10 @@ export interface WaterRippleFillProps {
   waterDistortion?: number;
   /** Flow speed multiplier (boosted while draining). Default 1 */
   speed?: number;
+  /** When false, pauses WebGL rendering cleanly to free mobile GPU budget. Default true */
+  active?: boolean;
+  /** Optional zero-render imperative pause/resume hook (true = paused). */
+  controlRef?: React.MutableRefObject<((paused: boolean) => void) | null>;
   className?: string;
 }
 
@@ -252,9 +256,14 @@ export function WaterRippleFill({
   surfaceDistortion = 0.05,
   waterDistortion = 0.03,
   speed = 1,
+  active = true,
+  controlRef,
   className = "",
 }: WaterRippleFillProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const propActiveRef = useRef(active);
+  propActiveRef.current = active;
+  const syncActiveRef = useRef<(() => void) | null>(null);
   const propsRef = useRef({
     colorA,
     colorB,
@@ -277,10 +286,14 @@ export function WaterRippleFill({
   };
 
   useEffect(() => {
+    syncActiveRef.current?.();
+  }, [active]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const gl =
-      canvas.getContext("webgl", { alpha: true, antialias: true, powerPreference: "low-power" }) ||
+      canvas.getContext("webgl", { alpha: true, antialias: false, powerPreference: "low-power" }) ||
       (canvas.getContext("experimental-webgl") as WebGLRenderingContext | null);
     if (!gl) return;
 
@@ -306,7 +319,9 @@ export function WaterRippleFill({
     gl.enableVertexAttribArray(posLoc);
     gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Cap backing resolution at 1.5x DPR: indistinguishable inside a 15–30px bar
+    // while cutting fragment-shader pixel work by ~44% on 2x/3x mobile displays.
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const syncSize = () => {
       const w = Math.max(2, Math.round(canvas.clientWidth * dpr));
       const h = Math.max(2, Math.round(canvas.clientHeight * dpr));
@@ -328,21 +343,57 @@ export function WaterRippleFill({
     let rafId = 0;
     let simTime = 1200;
     let lastNow = performance.now();
+    let lastDraw = 0;
     let inView = true;
     let docVisible = typeof document === "undefined" || !document.hidden;
+    let manualPaused = false;
+
+    const canRun = () => inView && docVisible && propActiveRef.current && !manualPaused;
+
+    const stopLoop = () => {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+    };
 
     const schedule = () => {
-      if (rafId || reducedMotion || !inView || !docVisible) return;
+      if (rafId || reducedMotion || !canRun()) return;
       lastNow = performance.now();
       rafId = requestAnimationFrame(draw);
     };
 
+    const syncActive = () => {
+      if (canRun()) {
+        syncSize();
+        schedule();
+      } else {
+        stopLoop();
+      }
+    };
+
+    syncActiveRef.current = syncActive;
+    if (controlRef) {
+      controlRef.current = (paused: boolean) => {
+        manualPaused = paused;
+        syncActive();
+      };
+    }
+
     const draw = (now: number) => {
       rafId = 0;
-      if (!inView || !docVisible) return;
+      if (!canRun()) return;
+      const p = propsRef.current;
+      // Gentle ~30fps cadence when idle preserves identical slow water ripples
+      // while halving mobile GPU shader load; full cadence while actively draining.
+      const minInterval = p.speed > 1.25 ? 16 : 32;
+      if (lastDraw && now - lastDraw < minInterval) {
+        if (!reducedMotion) rafId = requestAnimationFrame(draw);
+        return;
+      }
+      lastDraw = now;
       const dt = Math.min(64, Math.max(0, now - lastNow));
       lastNow = now;
-      const p = propsRef.current;
       if (!reducedMotion) {
         simTime += dt * p.speed;
       }
@@ -357,7 +408,7 @@ export function WaterRippleFill({
       if (uniforms["u_color_deep"]) gl.uniform3f(uniforms["u_color_deep"], p.colorDeep[0], p.colorDeep[1], p.colorDeep[2]);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      if (!reducedMotion && inView && docVisible) {
+      if (!reducedMotion && canRun()) {
         rafId = requestAnimationFrame(draw);
       }
     };
@@ -366,39 +417,33 @@ export function WaterRippleFill({
       typeof IntersectionObserver !== "undefined"
         ? new IntersectionObserver(([entry]) => {
             inView = entry?.isIntersecting ?? true;
-            if (inView) {
-              syncSize();
-              schedule();
-            } else if (rafId) {
-              cancelAnimationFrame(rafId);
-              rafId = 0;
-            }
+            syncActive();
           })
         : null;
     io?.observe(canvas);
 
     const onVis = () => {
       docVisible = !document.hidden;
-      if (docVisible) schedule();
-      else if (rafId) {
-        cancelAnimationFrame(rafId);
-        rafId = 0;
-      }
+      syncActive();
     };
     document.addEventListener("visibilitychange", onVis);
 
-    rafId = requestAnimationFrame(draw);
+    if (canRun()) {
+      rafId = requestAnimationFrame(draw);
+    }
 
     return () => {
+      syncActiveRef.current = null;
+      if (controlRef) controlRef.current = null;
       ro.disconnect();
       io?.disconnect();
       document.removeEventListener("visibilitychange", onVis);
-      if (rafId) cancelAnimationFrame(rafId);
+      stopLoop();
       gl.deleteBuffer(vbo);
       gl.useProgram(null);
       gl.deleteProgram(program);
     };
-  }, []);
+  }, [controlRef]);
 
   return (
     <canvas

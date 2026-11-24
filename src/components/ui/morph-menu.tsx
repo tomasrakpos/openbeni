@@ -2,6 +2,7 @@
 import { Check } from "lucide-react";
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { attachOutsideDismiss } from "@/lib/outsideDismiss";
 import { cn } from "@/lib/utils";
 
 /*
@@ -555,16 +556,20 @@ export function MorphMenu({
     onOpenChange(true);
   }, [onOpenChange, open]);
 
-  // Outside click closes.
+  // Outside click / tap closes reliably across mobile and desktop (including iframe taps).
   React.useEffect(() => {
     if (!open) return;
-    const down = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (cardRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
-      onOpenChange(false);
-    };
-    document.addEventListener("pointerdown", down, true);
-    return () => document.removeEventListener("pointerdown", down, true);
+    return attachOutsideDismiss({
+      isInside: (target, path) =>
+        Boolean(
+          cardRef.current?.contains(target) ||
+            triggerRef.current?.contains(target) ||
+            (path &&
+              ((cardRef.current && path.includes(cardRef.current)) ||
+                (triggerRef.current && path.includes(triggerRef.current)))),
+        ),
+      onDismiss: () => onOpenChange(false),
+    });
   }, [open, onOpenChange]);
 
   // Escape closes and returns focus to the trigger.

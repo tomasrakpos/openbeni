@@ -385,7 +385,7 @@ describe("credit deduction: site default models vs user-added providers", () => 
     };
   }
 
-  it("deducts 1 credit when using a default website catalog model", async () => {
+  it("deducts token-based credits (min 0.5 for a short reply) when using a default website catalog model", async () => {
     const siteCiphertext = await encryptSecret(MASTER_KEY, "sk-site-secret");
     const spy = installFetchMock({ credits: 5, siteCiphertext });
 
@@ -400,14 +400,14 @@ describe("credit deduction: site default models vs user-added providers", () => 
 
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Billing-Source")).toBe("site");
-    expect(res.headers.get("X-Credits-Charged")).toBe("1");
-    expect(spy.creditCalls).toEqual([{ user: "user-1", amount: 1 }]);
+    expect(res.headers.get("X-Credits-Charged")).toBe("0.5");
+    expect(spy.creditCalls).toEqual([{ user: "user-1", amount: 0.5 }]);
     expect(spy.upstreamCalls[0]?.url).toBe("https://site-upstream.example.com/v1/chat/completions");
     expect(spy.upstreamCalls[0]?.auth).toBe("Bearer sk-site-secret");
-    expect(spy.usageRecords[0]).toMatchObject({ billing_source: "site", credits_charged: 1 });
+    expect(spy.usageRecords[0]).toMatchObject({ billing_source: "site", credits_charged: 0.5 });
   });
 
-  it("rejects default website models with 402 credits_exhausted when user has 0 credits", async () => {
+  it("rejects default website models with 402 credits_exhausted and remaining balance when user has 0 credits", async () => {
     const siteCiphertext = await encryptSecret(MASTER_KEY, "sk-site-secret");
     const spy = installFetchMock({ credits: 0, siteCiphertext });
 
@@ -420,8 +420,10 @@ describe("credit deduction: site default models vs user-added providers", () => 
     );
 
     expect(res.status).toBe(402);
-    const body = (await res.json()) as { error: { code: string } };
+    const body = (await res.json()) as { error: { code: string; remaining?: number; message: string } };
     expect(body.error.code).toBe("credits_exhausted");
+    expect(body.error.remaining).toBe(0);
+    expect(body.error.message).toContain("0");
     expect(spy.creditCalls).toHaveLength(0);
     expect(spy.upstreamCalls).toHaveLength(0);
   });

@@ -33,6 +33,7 @@ import { chatToJson, chatToMarkdown, copyToClipboard, downloadJson, downloadText
 import { useT } from "@/lib/i18n";
 import { setAccent, useAccent, type Accent } from "@/lib/useAccent";
 import { useIsDesktopPanel } from "@/lib/useMediaQuery";
+import { cn } from "@/lib/utils";
 import { AppNav } from "@/features/layout/AppNav";
 import { CornerMenu, type CornerMenuSection } from "@/features/layout/CornerMenu";
 import { useCornerMenuSections } from "@/features/layout/cornerMenuItems";
@@ -93,6 +94,7 @@ export function TopBar() {
   const setModelPickerOpen = useUiStore((s) => s.setModelPickerOpen);
   const setAuthOpen = useUiStore((s) => s.setAuthOpen);
   const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
+  const navSearchOpen = useUiStore((s) => s.navSearchOpen);
   const authUser = useAuthStore((s) => s.user);
   const signedIn = useAuthStore((s) => s.signedIn);
   const profile = useAuthStore((s) => s.profile);
@@ -130,6 +132,10 @@ export function TopBar() {
   const [renameTargetId, setRenameTargetId] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
   const [deleteTargetId, setDeleteTargetId] = React.useState<string | null>(null);
+  const [menuSearchOpen, setMenuSearchOpen] = React.useState(false);
+  const [menuSearchQuery, setMenuSearchQuery] = React.useState("");
+  const [showAllProjects, setShowAllProjects] = React.useState(false);
+  const [showAllChats, setShowAllChats] = React.useState(false);
 
   const chatActions = React.useMemo(
     () => ({
@@ -142,7 +148,26 @@ export function TopBar() {
     }),
     [],
   );
-  const cornerMenuSections = useCornerMenuSections(chatActions);
+
+  const menuFilter = React.useMemo(
+    () => ({
+      searchOpen: menuSearchOpen,
+      onToggleSearch: () => {
+        setMenuSearchOpen((prev) => {
+          if (prev) setMenuSearchQuery("");
+          return !prev;
+        });
+      },
+      searchQuery: menuSearchQuery,
+      showAllProjects,
+      onShowAllProjects: () => setShowAllProjects(true),
+      showAllChats,
+      onShowAllChats: () => setShowAllChats(true),
+    }),
+    [menuSearchOpen, menuSearchQuery, showAllProjects, showAllChats],
+  );
+
+  const cornerMenuSections = useCornerMenuSections(chatActions, menuFilter);
   const renameTarget = chats.find((c) => c.id === renameTargetId);
   const deleteTarget = chats.find((c) => c.id === deleteTargetId);
 
@@ -178,6 +203,8 @@ export function TopBar() {
         src="/brand/wordmark.png"
         alt={t("app.name")}
         draggable={false}
+        decoding="async"
+        loading="lazy"
         className="h-[38px] w-auto max-w-[236px] select-none object-contain"
       />
     </div>
@@ -432,13 +459,32 @@ export function TopBar() {
 
   return (
     <>
-    <header className="pointer-events-none absolute inset-x-0 top-0 z-30 grid h-[var(--header-h)] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-2.5 pt-[env(safe-area-inset-top,0px)] sm:px-4">
-      <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+    <header
+      className={cn(
+        "pointer-events-none absolute inset-x-0 top-0 grid h-[var(--header-h)] grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 px-2.5 pt-[env(safe-area-inset-top,0px)] sm:px-4",
+        navSearchOpen ? "z-40" : "z-30",
+      )}
+    >
+      <div
+        className={cn(
+          "pointer-events-auto flex min-w-0 items-center gap-2 transition-[opacity,transform,filter] duration-200 ease-out",
+          navSearchOpen && "pointer-events-none scale-[0.96] opacity-0 blur-[2px]",
+        )}
+        aria-hidden={navSearchOpen || undefined}
+      >
         <CornerMenu
           sections={cornerMenuSections}
           label={t("nav.more")}
           header={menuBrand}
           footer={renderAccountFooter}
+          searchOpen={menuSearchOpen}
+          onSearchOpenChange={(next) => {
+            setMenuSearchOpen(next);
+            if (!next) setMenuSearchQuery("");
+          }}
+          searchQuery={menuSearchQuery}
+          onSearchQueryChange={setMenuSearchQuery}
+          searchPlaceholder={t("corner.searchPlaceholder")}
         />
 
         <div className="flex min-w-0 items-center gap-2">
@@ -468,8 +514,14 @@ export function TopBar() {
         <AppNav />
       </div>
 
-      <div className="pointer-events-auto flex min-w-0 items-center justify-end gap-1.5">
-        {rightSections.length > 0 ? (
+      <div
+        className={cn(
+          "pointer-events-auto flex min-w-0 items-center justify-end gap-1.5 transition-[opacity,transform,filter] duration-200 ease-out",
+          navSearchOpen && "pointer-events-none scale-[0.96] opacity-0 blur-[2px]",
+        )}
+        aria-hidden={navSearchOpen || undefined}
+      >
+        {!(view === "chat" && !hasChatMessages) && rightSections.length > 0 ? (
           <div className="right-menu-enter">
             <CornerMenu
               sections={rightSections}

@@ -3,9 +3,7 @@ import * as React from "react";
 import { Toaster, toast } from "sonner";
 import { ChatView } from "@/app/ChatView";
 import { resetProvidersOnce } from "@/db/defaults";
-import HalftoneFlowHero from "@/components/ui/halftone-flow-hero";
 import { ArrowLeft } from "lucide-react";
-import { GlassIntro } from "@/features/intro/GlassIntro";
 import { HeaderBlur } from "@/features/layout/HeaderBlur";
 import { MobilePreviewPager } from "@/features/layout/MobilePreviewPager";
 import { TopBar } from "@/features/layout/TopBar";
@@ -14,6 +12,8 @@ import { localizeError } from "@/lib/errors";
 import {
   loadAuthPanel,
   loadCommandPalette,
+  loadGlassIntro,
+  loadHalftoneFlowHero,
   loadModelPicker,
   loadProvidersPage,
   loadProviderWizard,
@@ -48,6 +48,8 @@ const AuthPanel = React.lazy(loadAuthPanel);
 const SmokeLogin = React.lazy(loadSmokeLogin);
 const RightPanel = React.lazy(loadRightPanel);
 const RightPanelBody = React.lazy(loadRightPanelBody);
+const HalftoneFlowHero = React.lazy(loadHalftoneFlowHero);
+const GlassIntro = React.lazy(loadGlassIntro);
 
 const INTRO_SEEN_KEY = "openharness.intro.seen";
 
@@ -197,6 +199,7 @@ export default function App() {
   }, [isDesktopPanel, previewAvailable, mobilePanelOpen, setMobilePanelOpen]);
 
   const [booted, setBooted] = React.useState(false);
+  const [heroReady, setHeroReady] = React.useState(false);
   // The glass intro plays once per browser tab session; reloads or redirects
   // within the same tab skip it until the user closes and reopens the site.
   const [introDone, setIntroDone] = React.useState(hasSeenIntroThisSession);
@@ -208,27 +211,28 @@ export default function App() {
     setIntroDone(true);
   }, []);
 
+  // Mount the WebGL backdrop right after first paint so initial FCP/TTI stays instant.
+  React.useEffect(() => {
+    let raf = 0;
+    let timer = 0;
+    raf = window.requestAnimationFrame(() => {
+      timer = window.setTimeout(() => setHeroReady(true), 80);
+    });
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, []);
+
   React.useEffect(() => {
     let cancelled = false;
     const stopPreload = startBackgroundPreload();
 
-    // Start remote auth + catalog hydration in parallel without blocking local
-    // IndexedDB boot or initial paint.
-    void useAuthStore
-      .getState()
-      .init()
-      .then(() => {
-        if (!cancelled) {
-          useCatalogStore.getState().init();
-          void useRoutersStore.getState().hydrate();
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          useCatalogStore.getState().init();
-          void useRoutersStore.getState().hydrate();
-        }
-      });
+    // Start remote auth, public catalog, and routers in parallel — zero
+    // sequential waterfall, never blocking initial paint or IndexedDB boot.
+    void useAuthStore.getState().init().catch(() => undefined);
+    useCatalogStore.getState().init();
+    void useRoutersStore.getState().hydrate().catch(() => undefined);
 
     const boot = async () => {
       try {
@@ -357,23 +361,35 @@ export default function App() {
     : accent === "ember"
       ? "ember"
       : "cobalt";
+  const fallbackBg = lightBackground
+    ? accent === "ember"
+      ? "radial-gradient(ellipse 80% 70% at 50% 40%, rgba(224,83,26,0.16), #ffffff 72%)"
+      : "radial-gradient(ellipse 80% 70% at 50% 40%, rgba(61,70,232,0.16), #ffffff 72%)"
+    : accent === "ember"
+      ? "radial-gradient(ellipse 80% 70% at 50% 40%, rgba(217,82,29,0.22), #110d0b 75%)"
+      : "radial-gradient(ellipse 80% 70% at 50% 40%, rgba(51,96,242,0.24), #070a16 75%)";
+
   const showBackground = settings.showBackground ? (
     <div
       aria-hidden="true"
       data-slot="warp-backdrop"
+      style={{ background: fallbackBg }}
       className={cn(
         "pointer-events-none fixed inset-0 z-0 overflow-hidden transition-opacity duration-[1200ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
         inConversation ? "opacity-[0.12] dark:opacity-[0.08]" : "opacity-80 dark:opacity-70",
       )}
     >
-      <HalftoneFlowHero palette={backgroundPalette} height="100%" backgroundOnly />
+      {heroReady ? (
+        <React.Suspense fallback={null}>
+          <HalftoneFlowHero palette={backgroundPalette} height="100%" backgroundOnly />
+        </React.Suspense>
+      ) : null}
     </div>
   ) : null;
 
   return (
     <>
-      {booted ? (
-        showLogin ? (
+      {showLogin ? (
           <div className="relative min-h-dvh w-full">
             <React.Suspense fallback={<ViewLoadingFallback />}>
               <SmokeLogin onGoogleSignIn={googleSignIn} />
@@ -494,10 +510,21 @@ export default function App() {
 
           {locked ? <div className="sr-only" aria-live="polite">{t("settings.lockedBadge")}</div> : null}
         </div>
-        )
-      ) : null}
+      )}
 
-      {!introDone ? <GlassIntro ready={booted} onFinish={finishIntro} /> : null}
+      {!introDone ? (
+        <React.Suspense
+          fallback={
+            <div
+              aria-hidden="true"
+              data-slot="glass-intro-fallback"
+              className="fixed inset-0 z-[200] bg-[#05050a]"
+            />
+          }
+        >
+          <GlassIntro ready={booted} onFinish={finishIntro} />
+        </React.Suspense>
+      ) : null}
     </>
   );
 }

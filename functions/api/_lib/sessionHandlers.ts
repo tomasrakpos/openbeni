@@ -4,6 +4,10 @@ import { supabaseConfigured } from "./supabase";
 import { apiHeaders, jsonError, rejectedOrigin } from "../security";
 
 export async function handleSession(request: Request, env: AuthEnv = {}): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    if (rejectedOrigin(request, env)) return jsonError(request, env, 403, "Origin not allowed.");
+    return new Response(null, { status: 204, headers: apiHeaders(request, env) });
+  }
   if (rejectedOrigin(request, env)) return jsonError(request, env, 403, "Origin not allowed.");
   if (!supabaseConfigured(env)) {
     return jsonError(request, env, 503, "User accounts are not configured on this server.");
@@ -17,6 +21,10 @@ export async function handleSession(request: Request, env: AuthEnv = {}): Promis
 }
 
 export async function handleConfig(request: Request, env: AuthEnv = {}): Promise<Response> {
+  if (request.method === "OPTIONS") {
+    if (rejectedOrigin(request, env)) return jsonError(request, env, 403, "Origin not allowed.");
+    return new Response(null, { status: 204, headers: apiHeaders(request, env) });
+  }
   if (rejectedOrigin(request, env)) return jsonError(request, env, 403, "Origin not allowed.");
   let signupOpen = true;
   if (supabaseConfigured(env)) {

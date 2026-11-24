@@ -1,13 +1,14 @@
-// chat feature: SkillPicker — compact hybrid Auto + 4-Skill selector inside
-// the prompt composer toolbar. Defaults to Auto (backend automatically routes
-// each message to the right skill), while letting users pin any skill manually.
+// chat feature: SkillPicker — compact Auto + category selector inside the prompt
+// composer toolbar. Defaults to Auto (fast LLM classifier routes each turn to
+// website | game | chat | deep_thinking | other), while letting users pin a category.
 import {
+  Brain,
   ChevronDown,
   Compass,
   Gamepad2,
   Globe,
   MessageCircle,
-  Search,
+  Sparkles,
 } from "lucide-react";
 import * as React from "react";
 import { GlassButton } from "@/components/ui/glass-button";
@@ -18,9 +19,9 @@ import type { SkillId, SkillMode } from "@/lib/types";
 const SKILL_MODES: SkillMode[] = [
   "auto",
   "chat",
-  "web_builder",
-  "game_builder",
-  "deep_research",
+  "website",
+  "game",
+  "deep_thinking",
 ];
 
 export function SkillIcon({
@@ -33,12 +34,14 @@ export function SkillIcon({
   switch (mode) {
     case "chat":
       return <MessageCircle size={size} strokeWidth={1.75} aria-hidden="true" />;
-    case "web_builder":
+    case "website":
       return <Globe size={size} strokeWidth={1.75} aria-hidden="true" />;
-    case "game_builder":
+    case "game":
       return <Gamepad2 size={size} strokeWidth={1.75} aria-hidden="true" />;
-    case "deep_research":
-      return <Search size={size} strokeWidth={1.75} aria-hidden="true" />;
+    case "deep_thinking":
+      return <Brain size={size} strokeWidth={1.75} aria-hidden="true" />;
+    case "other":
+      return <Sparkles size={size} strokeWidth={1.75} aria-hidden="true" />;
     case "auto":
     default:
       return <Compass size={size} strokeWidth={1.75} aria-hidden="true" />;

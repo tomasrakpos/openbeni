@@ -29,14 +29,6 @@ export interface RequestOptions {
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  // Development-only: `/admin` on localhost answers with sample data when no
-  // Supabase project is configured. Compiled out of production builds.
-  if (import.meta.env.DEV && typeof window !== "undefined" && window.location.pathname.startsWith("/admin")) {
-    const { devAdminMock } = await import("@/lib/devAdminMock");
-    const mocked = await devAdminMock<T>(path, options);
-    if (mocked !== undefined) return mocked;
-  }
-
   const headers = new Headers({ Accept: "application/json" });
   if (options.body !== undefined) headers.set("Content-Type", "application/json");
 

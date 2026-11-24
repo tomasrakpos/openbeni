@@ -39,6 +39,7 @@ import { useUiStore } from "@/stores/ui";
 import {
   buildCombinedRouters,
   eligibleFreeModelsForLocalProvider,
+  isAdminPublicRouter,
   isRouterSelectionId,
   parseRouterSelectionId,
   useRoutersStore,
@@ -50,6 +51,8 @@ import type {
   Chat,
   ChatMessageInput,
   ChatParams,
+  ElementEditContext,
+  ElementEditFileSnapshot,
   ErrorKind,
   Message,
   Provider,
@@ -58,11 +61,6 @@ import type {
 import { useSettingsStore } from "@/stores/settings";
 import { useProvidersStore } from "@/stores/providers";
 import {
-  DEMO_PROVIDER_ID,
-  DEMO_WEB_DESIGN_MODEL_ID,
-  demoModel,
-  demoProvider,
-  demoWebDesignModel,
   SERVER_PROVIDER_ID,
   serverProvider,
   useCatalogStore,
@@ -97,7 +95,7 @@ interface ChatsState {
   setChatModel: (providerId: string, modelId: string) => Promise<void>;
   setParams: (patch: Partial<ChatParams>) => Promise<void>;
   setChatPreviewEnabled: (chatId: string, enabled: boolean) => Promise<void>;
-  send: (text: string) => Promise<void>;
+  send: (text: string, options?: { editContext?: ElementEditContext }) => Promise<void>;
   stop: () => void;
   regenerate: (messageId: string) => Promise<void>;
   editAndResend: (messageId: string, text: string) => Promise<void>;
@@ -126,9 +124,10 @@ const clientRouterScheduler = new RouterScheduler();
 
 function routerVirtualProvider(router: CombinedRouterItem): Provider {
   const now = Date.now();
+  const isAdminNative = isAdminPublicRouter(router);
   return {
     id: "router",
-    name: router.providerName || "OpenHarneks",
+    name: isAdminNative ? "OpenHarneks" : (router.providerName || "OpenHarneks"),
     baseUrl: "",
     apiFormat: "openai",
     auth: { header: "", prefix: "" },
@@ -138,7 +137,7 @@ function routerVirtualProvider(router: CombinedRouterItem): Provider {
     enabled: true,
     favorite: false,
     order: 0,
-    managed: router.source === "server",
+    managed: isAdminNative || router.source === "server",
     paths: {},
     hasKey: true,
     createdAt: now,
@@ -171,10 +170,6 @@ export function resolveTarget(chat: Chat): { provider: Provider; model: AIModel 
   const serverModels = useCatalogStore.getState().providerModels;
   const providers = serverModels.length > 0 ? [...localProviders, serverProvider()] : [...localProviders];
   const models = serverModels.length > 0 ? [...localModels, ...serverModels] : [...localModels];
-  if (import.meta.env.DEV) {
-    providers.push(demoProvider());
-    models.push(demoModel(), demoWebDesignModel());
-  }
 
   if (isRouterSelectionId(chat.modelId)) {
     const routersState = useRoutersStore.getState();
@@ -202,6 +197,24 @@ export function resolveTarget(chat: Chat): { provider: Provider; model: AIModel 
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order);
     const first = candidateModels[0];
     if (first) return { provider: candidate, model: first };
+  }
+  // If all individual provider models are hidden/disabled, fall back to an active
+  // router (preferring public admin native OpenHarneks routers) so chat stays usable.
+  const routersState = useRoutersStore.getState();
+  const fallbackCombined = buildCombinedRouters(
+    routersState.publicRouters,
+    routersState.localRouters,
+    providers,
+    models,
+  );
+  const fallbackRouter =
+    fallbackCombined.find((r) => isAdminPublicRouter(r) && r.activeMemberCount > 0) ??
+    fallbackCombined.find((r) => r.activeMemberCount > 0);
+  if (fallbackRouter) {
+    return {
+      provider: routerVirtualProvider(fallbackRouter),
+      model: routerVirtualModel(fallbackRouter),
+    };
   }
   if (providers.length === 0) return { error: "error.noProvider" };
   if (models.length === 0) return { error: "error.noModel" };
@@ -236,14 +249,132 @@ export function isChatPreviewAvailable(
   return false;
 }
 
-async function buildApiInputs(
+export const ELEMENT_EDIT_MARKER = "[OPENBENI_ELEMENT_EDIT]";
+
+const MAX_EMBEDDED_PROJECT_CHARS = 52_000;
+
+const CLIENT_ELEMENT_EDIT_SYSTEM_PROMPT = [
+  "Active task: SURGICAL IN-PLACE ELEMENT EDIT on an existing web/app project.",
+  "CRITICAL RULES — FOLLOW STRICTLY:",
+  "1. DO NOT rebuild, redesign, or replace the existing page with a different design.",
+  "2. Preserve the ENTIRE existing project — background, colors, theme, layout, typography, copy, styles, scripts, and every unrelated element — verbatim.",
+  "3. Modify ONLY the selected target element to satisfy the user's request.",
+  "4. Output the complete updated project file(s) in standard fenced code blocks preserving exact filenames so the preview updates in place with ONLY that change.",
+].join("\n");
+
+function findLatestProjectFilesInThread(
+  thread: Message[],
+  beforeIndex: number,
+): ElementEditFileSnapshot[] {
+  for (let i = beforeIndex - 1; i >= 0; i -= 1) {
+    const msg = thread[i];
+    if (!msg || msg.role !== "assistant" || !msg.content.trim()) continue;
+    const files = extractProjectFiles(msg.content);
+    if (files.length > 0) {
+      return files.map((f) => ({ path: f.path, language: f.language, content: f.content }));
+    }
+  }
+  return [];
+}
+
+export function formatElementEditApiContent(
+  message: Message,
+  isLatestEdit: boolean,
+  fallbackFiles: ElementEditFileSnapshot[],
+): string {
+  const ctx = message.editContext;
+  if (!ctx) return message.content;
+
+  if (!isLatestEdit) {
+    return `[Edited preview element ${ctx.label} (${ctx.selector})]: ${message.content}`;
+  }
+
+  const projectFiles =
+    ctx.projectFiles && ctx.projectFiles.length > 0 ? ctx.projectFiles : fallbackFiles;
+
+  const lines: string[] = [
+    ELEMENT_EDIT_MARKER,
+    "SURGICAL IN-PLACE ELEMENT EDIT — DO NOT REBUILD OR REDESIGN THE PAGE.",
+    "Preserve the existing project files below 100% intact (keep the exact same theme, colors, layout, sections, text, styles, and scripts). Modify ONLY the selected target element below to fulfill the user's request, and output the complete updated file(s) in fenced code blocks using the exact same filenames.",
+    "",
+    "Selected target element:",
+    `- Label: \`${ctx.label}\``,
+    `- CSS Selector: \`${ctx.selector}\``,
+  ];
+  if (ctx.text) {
+    lines.push(`- Current text: "${ctx.text.slice(0, 160)}"`);
+  }
+  if (ctx.outerHtml) {
+    lines.push(`- Current outerHTML:\n\`\`\`html\n${ctx.outerHtml.slice(0, 2400)}\n\`\`\``);
+  }
+
+  if (projectFiles.length > 0) {
+    let used = lines.join("\n").length;
+    const embedded: string[] = [];
+    for (const file of projectFiles) {
+      const lang = file.language || "html";
+      const block = `\`\`\`${lang} ${file.path}\n${file.content}\n\`\`\``;
+      if (used + block.length + 200 <= MAX_EMBEDDED_PROJECT_CHARS) {
+        embedded.push(block);
+        used += block.length + 2;
+      }
+    }
+    if (embedded.length > 0) {
+      lines.push(
+        "",
+        "Current project files (edit THESE exact files in place — do NOT start over):",
+        ...embedded,
+      );
+    } else {
+      lines.push(
+        "",
+        "Current project files are in the previous assistant message in this conversation — edit THOSE exact files in place and do NOT start over.",
+      );
+    }
+  }
+
+  lines.push("", `User's requested change on the selected element:\n${message.content}`);
+  return lines.join("\n");
+}
+
+function buildIntentMessages(
+  thread: Message[],
+  attachmentMap: Map<string, Attachment>,
+): Array<{ role: Message["role"]; content: string; hasImages: boolean }> {
+  let lastEditIdx = -1;
+  for (let i = thread.length - 1; i >= 0; i -= 1) {
+    if (thread[i]?.role === "user" && thread[i]?.editContext) {
+      lastEditIdx = i;
+      break;
+    }
+  }
+  return thread.map((m, idx) => ({
+    role: m.role,
+    content:
+      idx === lastEditIdx && m.editContext
+        ? `${ELEMENT_EDIT_MARKER} (${m.editContext.label}) ${m.content}`
+        : m.content,
+    hasImages: m.attachments.some((id) => attachmentMap.get(id)?.kind === "image"),
+  }));
+}
+
+export async function buildApiInputs(
   thread: Message[],
   attachmentMap: Map<string, Attachment>,
   provider: Provider,
   model: AIModel,
 ): Promise<ChatMessageInput[]> {
+  let lastEditIdx = -1;
+  for (let i = thread.length - 1; i >= 0; i -= 1) {
+    if (thread[i]?.role === "user" && thread[i]?.editContext) {
+      lastEditIdx = i;
+      break;
+    }
+  }
+
   const out: ChatMessageInput[] = [];
-  for (const message of thread) {
+  for (let idx = 0; idx < thread.length; idx += 1) {
+    const message = thread[idx]!;
     if (message.role === "system") continue;
     if (message.role === "assistant" && !message.content.trim()) continue;
     const images: { mimeType: string; data: string }[] = [];
@@ -272,9 +403,16 @@ async function buildApiInputs(
         extraText += `\n\n--- Attached file: ${attachment.name} ---\n${attachment.text}`;
       }
     }
+    const baseContent = message.editContext
+      ? formatElementEditApiContent(
+          message,
+          idx === lastEditIdx,
+          idx === lastEditIdx ? findLatestProjectFilesInThread(thread, idx) : [],
+        )
+      : message.content;
     out.push({
       role: message.role,
-      content: `${message.content}${extraText}`.trim(),
+      content: `${baseContent}${extraText}`.trim(),
       ...(images.length ? { images } : {}),
       ...(videos.length ? { videos } : {}),
     });
@@ -456,7 +594,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
     await db.chats.put(next);
   },
 
-  send: async (text) => {
+  send: async (text, options) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (get().streaming) return;
@@ -483,6 +621,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
     const pendingAttachments = get()
       .attachments.filter((attachment) => !referenced.has(attachment.id))
       .map((attachment) => attachment.id);
+    const editContext = options?.editContext;
     const userMessage: Message = {
       id: uid("msg"),
       chatId: chat.id,
@@ -490,6 +629,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       content: trimmed,
       parentId: chat.currentLeafId,
       attachments: pendingAttachments,
+      ...(editContext ? { editContext } : {}),
       createdAt: now,
     };
     const assistantMessage: Message = {
@@ -501,10 +641,11 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       attachments: [],
       providerId: provider.id,
       modelId: model.modelId,
+      ...(provider.id === "router" ? { modelDisplayName: model.displayName } : {}),
       createdAt: now + 1,
     };
     const activeSkillMode = useUiStore.getState().skillMode;
-    const pinnedPreviewSkill = activeSkillMode === "web_builder" || activeSkillMode === "game_builder";
+    const pinnedPreviewSkill = activeSkillMode === "website" || activeSkillMode === "game";
     const title = chat.title.trim() ? chat.title : deriveTitle(trimmed);
     const updatedChat: Chat = {
       ...chat,
@@ -514,8 +655,8 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       currentLeafId: assistantMessage.id,
       previewEnabled:
         chat.previewEnabled ||
+        Boolean(editContext) ||
         pinnedPreviewSkill ||
-        (import.meta.env.DEV && model.id === DEMO_WEB_DESIGN_MODEL_ID) ||
         undefined,
       updatedAt: now,
     };
@@ -555,6 +696,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       attachments: [],
       providerId: target.provider.id,
       modelId: target.model.modelId,
+      ...(target.provider.id === "router" ? { modelDisplayName: target.model.displayName } : {}),
       createdAt: Date.now(),
     };
     await db.messages.put(assistant);
@@ -593,6 +735,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       attachments: [],
       providerId: target.provider.id,
       modelId: target.model.modelId,
+      ...(target.provider.id === "router" ? { modelDisplayName: target.model.displayName } : {}),
       createdAt: now + 1,
     };
     await db.messages.bulkPut([userMessage, assistant]);
@@ -722,414 +865,8 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       set({ error: { kind: "auth", message: "error.accountBlocked" } });
       return;
     }
-    if (import.meta.env.DEV && auth.profile) {
-      const { checkDevUserBlocked } = await import("@/lib/devAdminMock");
-      if (await checkDevUserBlocked(auth.profile.id, auth.profile.email)) {
-        set({ error: { kind: "auth", message: "error.accountBlocked" } });
-        return;
-      }
-    }
     if (auth.profile && auth.profile.credits <= 0) {
       set({ error: { kind: "rate-limit", message: "error.creditsExhausted" } });
-      return;
-    }
-
-    // Dev-only local mock chat: simulates a smooth ~3s streamed reply without
-    // calling any AI API so the real-time credit drain UI can be previewed.
-    if (provider.id === DEMO_PROVIDER_ID && import.meta.env.DEV) {
-      const controller = new AbortController();
-      activeAbort = controller;
-      const startedAt = Date.now();
-      set({
-        streaming: { chatId: chat.id, messageId: assistantId, content: "", reasoning: "", startedAt },
-        error: null,
-      });
-
-      const lastUser = [...thread].reverse().find((m) => m.role === "user")?.content.trim() ?? "";
-      const isPersian = /[\u0600-\u06FF]/.test(lastUser);
-      const quote = lastUser.length > 60 ? `${lastUser.slice(0, 60)}…` : lastUser;
-      const remainingAfter = Math.max(0, (auth.profile?.credits ?? 1) - 1);
-
-      const activeSkillMode = useUiStore.getState().skillMode;
-      const attachmentMap = new Map(get().attachments.map((a) => [a.id, a]));
-      const intentMessages = thread.map((m) => ({
-        role: m.role,
-        content: m.content,
-        hasImages: m.attachments.some((id) => attachmentMap.get(id)?.kind === "image"),
-      }));
-
-      const isWebDesignMock = model.id === DEMO_WEB_DESIGN_MODEL_ID;
-      // Query the real backend 4-skill router + live search engine so DEV mock
-      // testing demonstrates all 4 skills (Auto & Manual) with real live search.
-      const effectiveMode =
-        isWebDesignMock && activeSkillMode === "auto" ? "web_builder" : activeSkillMode;
-      const backendIntent = await checkBackendPreviewIntent(
-        intentMessages,
-        controller.signal,
-        effectiveMode,
-      );
-      const resolvedSkill: SkillId =
-        backendIntent?.skillId ?? (isWebDesignMock ? "web_builder" : "chat");
-      const resolvedSourcesCount =
-        (backendIntent?.webSources?.length ?? 0) + (backendIntent?.imageAssets?.length ?? 0);
-      set((state) =>
-        state.streaming && state.streaming.messageId === assistantId
-          ? {
-              streaming: {
-                ...state.streaming,
-                skillId: resolvedSkill,
-                skillSourcesCount: resolvedSourcesCount,
-              },
-            }
-          : state,
-      );
-
-      const needsPreview = Boolean(
-        resolvedSkill === "web_builder" ||
-          resolvedSkill === "game_builder" ||
-          backendIntent?.needsPreview ||
-          chat.previewEnabled,
-      );
-      if (needsPreview) {
-        void get().setChatPreviewEnabled(chat.id, true);
-      }
-
-      const uiLang = useSettingsStore.getState().settings.lang;
-      const usePersian = isPersian || uiLang === "fa";
-
-      const loginSteps = usePersian
-        ? [
-            "ساخت ساختار پایه صفحه (index.html)",
-            "طراحی کارت شیشه‌ای و استایل ریسپانسیو",
-            "ساخت فیلدهای ایمیل، رمز عبور و دکمه نمایش رمز",
-            "افزودن اعتبارسنجی تعاملی و پیام وضعیت ورود",
-          ]
-        : [
-            "Creating page structure (index.html)",
-            "Styling glassmorphic card & responsive layout",
-            "Building email, password & visibility toggle fields",
-            "Adding interactive validation & login feedback",
-          ];
-
-      const loginPlanBlock = `<plan>\n${loginSteps.map((s) => `- ${s}`).join("\n")}\n</plan>`;
-
-      const demoLoginFormCode = `${loginPlanBlock}\n\n\`\`\`html index.html
-<!-- @step: ${loginSteps[0]} -->
-<!doctype html>
-<html lang="${usePersian ? "fa" : "en"}" dir="${usePersian ? "rtl" : "ltr"}">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>${usePersian ? "فرم ورود — پیش‌نمایش" : "Sign In — Preview"}</title>
-<!-- @step: ${loginSteps[1]} -->
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{
-    min-height:100vh;display:grid;place-items:center;padding:20px;
-    background:radial-gradient(circle at 20% 10%,#2b1d5e 0%,#0b0d1a 55%,#070811 100%);
-    color:#f3f6ff;font-family:Inter,system-ui,-apple-system,sans-serif;
-  }
-  .card{
-    width:min(380px,100%);padding:28px 24px;border-radius:22px;
-    background:rgba(255,255,255,.06);
-    border:1px solid rgba(255,255,255,.13);
-    box-shadow:0 24px 60px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.16);
-    backdrop-filter:blur(18px);
-  }
-  .badge{
-    display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
-    background:rgba(139,92,246,.18);color:#c4b5fd;font-size:11px;font-weight:600;margin-bottom:14px;
-  }
-  h1{font-size:22px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}
-  .sub{font-size:13px;color:rgba(243,246,255,.65);margin-bottom:22px;line-height:1.5}
-  label{display:block;font-size:12px;font-weight:500;color:rgba(243,246,255,.82);margin-bottom:6px}
-  .field{margin-bottom:14px;position:relative}
-  input[type=email],input[type=password],input[type=text]{
-    width:100%;height:42px;padding:0 14px;border-radius:12px;
-    border:1px solid rgba(255,255,255,.14);background:rgba(10,12,24,.65);
-    color:#fff;font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s;
-  }
-  input:focus{border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.22)}
-  .pw-wrap{position:relative}
-  .pw-wrap input{padding-inline-end:64px}
-  .toggle{
-    position:absolute;inset-inline-end:8px;top:50%;transform:translateY(-50%);
-    border:0;background:transparent;color:#a5b4fc;font-size:12px;font-weight:600;
-    padding:4px 8px;border-radius:8px;cursor:pointer;
-  }
-  .row{display:flex;align-items:center;justify-content:space-between;margin:10px 0 18px;font-size:12.5px;color:rgba(243,246,255,.72)}
-  .row label{display:inline-flex;align-items:center;gap:7px;margin:0;cursor:pointer}
-  .row a{color:#c4b5fd;text-decoration:none}
-  .btn{
-    width:100%;height:44px;border:0;border-radius:13px;
-    background:linear-gradient(135deg,#7c5cff,#5b3df5);color:#fff;
-    font-size:14px;font-weight:600;cursor:pointer;
-    box-shadow:0 10px 26px rgba(124,92,255,.38);transition:transform .15s,filter .15s;
-  }
-  .btn:active{transform:scale(.98)}
-  .status{
-    margin-top:14px;min-height:20px;font-size:12.5px;text-align:center;
-    color:#6ee7b7;font-weight:500;
-  }
-</style>
-</head>
-<body>
-  <!-- @step: ${usePersian ? "ساخت فیلدهای ایمیل، رمز عبور و دکمه نمایش رمز" : "Building email, password & visibility toggle fields"} -->
-  <form class="card" id="loginForm" novalidate>
-    <div class="badge">${usePersian ? "پیش‌نمایش طراحی وب" : "Web Design Preview"}</div>
-    <h1>${usePersian ? "خوش برگشتی" : "Welcome back"}</h1>
-    <p class="sub">${usePersian ? "برای ورود به فضای کاری، اطلاعات حسابت را وارد کن." : "Sign in to continue to your workspace."}</p>
-    <div class="field">
-      <label for="email">${usePersian ? "ایمیل" : "Email"}</label>
-      <input id="email" type="email" placeholder="you@example.com" dir="ltr" required />
-    </div>
-    <div class="field">
-      <label for="pw">${usePersian ? "رمز عبور" : "Password"}</label>
-      <div class="pw-wrap">
-        <input id="pw" type="password" placeholder="••••••••" dir="ltr" required />
-        <button type="button" class="toggle" id="togglePw">${usePersian ? "نمایش" : "Show"}</button>
-      </div>
-    </div>
-    <div class="row">
-      <label><input type="checkbox" id="rem" checked /> ${usePersian ? "مرا به خاطر بسپار" : "Remember me"}</label>
-      <a href="#" id="forgot">${usePersian ? "فراموشی رمز؟" : "Forgot password?"}</a>
-    </div>
-    <button class="btn" type="submit">${usePersian ? "ورود به حساب" : "Sign in"}</button>
-    <div class="status" id="status" role="status"></div>
-  </form>
-  <!-- @step: ${usePersian ? "افزودن اعتبارسنجی تعاملی و پیام وضعیت ورود" : "Adding interactive validation & login feedback"} -->
-  <script>
-    const pw = document.getElementById("pw");
-    const toggle = document.getElementById("togglePw");
-    const status = document.getElementById("status");
-    const isFa = ${usePersian ? "true" : "false"};
-    toggle.onclick = () => {
-      const show = pw.type === "password";
-      pw.type = show ? "text" : "password";
-      toggle.textContent = show ? (isFa ? "مخفی" : "Hide") : (isFa ? "نمایش" : "Show");
-    };
-    document.getElementById("forgot").onclick = (e) => {
-      e.preventDefault();
-      status.style.color = "#c4b5fd";
-      status.textContent = isFa ? "لینک بازیابی رمز ارسال شد (آزمایشی)." : "Password reset link sent (demo).";
-    };
-    document.getElementById("loginForm").onsubmit = (e) => {
-      e.preventDefault();
-      const email = document.getElementById("email").value.trim();
-      if (!email || !pw.value) {
-        status.style.color = "#fda4af";
-        status.textContent = isFa ? "لطفاً ایمیل و رمز عبور را وارد کن." : "Please enter both email and password.";
-        return;
-      }
-      status.style.color = "#6ee7b7";
-      status.textContent = isFa ? "با موفقیت وارد شدی (" + email + ") ✓" : "Signed in as " + email + " ✓";
-    };
-  </script>
-</body>
-</html>
-\`\`\``;
-
-      const demoPreviewCode =
-        resolvedSkill === "game_builder"
-          ? `<plan>
-- ${usePersian ? "ساخت بوم ریسپانسیو و نورپردازی فضا" : "Set up HiDPI canvas & atmospheric lighting"}
-- ${usePersian ? "پیاده‌سازی حرکت نرم بازیکن با کیبورد و لمس" : "Implement smooth keyboard & touch controls"}
-- ${usePersian ? "افزودن موانع، ذرات برخورد و امتیاز زنده" : "Add obstacles, particle bursts & live scoring"}
-</plan>
-
-\`\`\`html index.html
-<!-- @step: ${usePersian ? "ساخت بوم ریسپانسیو و نورپردازی فضا" : "Set up HiDPI canvas & atmospheric lighting"} -->
-<!doctype html>
-<html lang="${usePersian ? "fa" : "en"}">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
-<title>${usePersian ? "بازی فضایی — پیش‌نمایش" : "Orbit Dodge — Game Studio"}</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0;user-select:none;-webkit-user-select:none}
-  body{min-height:100vh;overflow:hidden;background:#070914;color:#eef2ff;font-family:Inter,system-ui,sans-serif;display:grid;place-items:center}
-  canvas{display:block;width:100vw;height:100vh;touch-action:none}
-  .hud{position:fixed;top:14px;inset-inline:16px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;font-size:13px;font-weight:600}
-  .pill{padding:6px 12px;border-radius:999px;background:rgba(15,18,36,.72);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(10px)}
-  .overlay{position:fixed;inset:0;display:grid;place-items:center;background:rgba(7,9,20,.65);backdrop-filter:blur(8px)}
-  .panel{width:min(320px,88vw);padding:24px;border-radius:20px;background:rgba(18,22,42,.92);border:1px solid rgba(255,255,255,.14);text-align:center}
-  h1{font-size:20px;margin-bottom:6px}
-  p{font-size:12.5px;color:rgba(238,242,255,.68);margin-bottom:18px;line-height:1.5}
-  button{width:100%;height:42px;border:0;border-radius:12px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;font-weight:600;cursor:pointer}
-</style>
-</head>
-<body>
-  <canvas id="c"></canvas>
-  <div class="hud">
-    <div class="pill" id="scoreHud">0</div>
-    <div class="pill" id="bestHud">Best: 0</div>
-  </div>
-  <div class="overlay" id="ov">
-    <div class="panel">
-      <h1 id="ovTitle">${usePersian ? "فرار مداری" : "Orbit Dodge"}</h1>
-      <p id="ovSub">${usePersian ? "انگشت یا موس را بکشید (یا کلیدهای چپ/راست) و از شهاب‌ها جاخالی بدهید." : "Drag anywhere or use Left/Right arrows to dodge incoming meteors."}</p>
-      <button id="startBtn">${usePersian ? "شروع بازی" : "Play"}</button>
-    </div>
-  </div>
-  <script>
-    const c = document.getElementById("c"), ctx = c.getContext("2d");
-    const ov = document.getElementById("ov"), scoreHud = document.getElementById("scoreHud"), bestHud = document.getElementById("bestHud");
-    let w = 0, h = 0, dpr = Math.min(2, window.devicePixelRatio || 1);
-    function resize(){ w = innerWidth; h = innerHeight; c.width = w*dpr; c.height = h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); }
-    resize(); addEventListener("resize", resize);
-    // @step: ${usePersian ? "پیاده‌سازی حرکت نرم بازیکن با کیبورد و لمس" : "Implement smooth keyboard & touch controls"}
-    let running = false, score = 0, best = Number(localStorage.getItem("oh_orbit_best")||0);
-    bestHud.textContent = "Best: " + best;
-    const ship = { x: 0, tx: 0, y: 0, r: 14 };
-    const keys = { left: false, right: false };
-    let rocks = [], parts = [], stars = Array.from({length:60},()=>({x:Math.random()*1200,y:Math.random()*900,s:Math.random()*2+0.5}));
-    addEventListener("keydown", e => { if(e.key==="ArrowLeft"||e.key==="a") keys.left=true; if(e.key==="ArrowRight"||e.key==="d") keys.right=true; });
-    addEventListener("keyup", e => { if(e.key==="ArrowLeft"||e.key==="a") keys.left=false; if(e.key==="ArrowRight"||e.key==="d") keys.right=false; });
-    c.addEventListener("pointermove", e => { if(running) ship.tx = e.clientX; });
-    c.addEventListener("pointerdown", e => { if(running) ship.tx = e.clientX; });
-    // @step: ${usePersian ? "افزودن موانع، ذرات برخورد و امتیاز زنده" : "Add obstacles, particle bursts & live scoring"}
-    function start(){ running = true; score = 0; rocks = []; parts = []; ship.x = w/2; ship.tx = w/2; ship.y = h - 78; ov.style.display = "none"; }
-    document.getElementById("startBtn").onclick = start;
-    let last = performance.now(), spawn = 0;
-    function loop(now){
-      const dt = Math.min(0.05, (now - last)/1000); last = now;
-      ctx.fillStyle = "#070914"; ctx.fillRect(0,0,w,h);
-      for(const s of stars){ s.y += (30 + s.s*25)*dt; if(s.y > h){ s.y = -4; s.x = Math.random()*w; } ctx.fillStyle = "rgba(199,210,254,"+(0.25+s.s*0.2)+")"; ctx.fillRect(s.x%w,s.y,s.s,s.s); }
-      if(running){
-        if(keys.left) ship.tx -= 380*dt; if(keys.right) ship.tx += 380*dt;
-        ship.tx = Math.max(22, Math.min(w-22, ship.tx)); ship.x += (ship.tx - ship.x) * Math.min(1, dt*14); ship.y = h - 78;
-        score += dt * 15; scoreHud.textContent = Math.floor(score);
-        spawn -= dt; if(spawn <= 0){ spawn = Math.max(0.22, 0.72 - score*0.002); rocks.push({x:20+Math.random()*(w-40),y:-24,r:12+Math.random()*16,vy:180+Math.random()*160+score*0.6}); }
-        for(let i=rocks.length-1;i>=0;i--){
-          const r = rocks[i]; r.y += r.vy*dt;
-          const g = ctx.createRadialGradient(r.x-r.r*0.3,r.y-r.r*0.3,2,r.x,r.y,r.r);
-          g.addColorStop(0,"#fda4af"); g.addColorStop(1,"#9f1239");
-          ctx.beginPath(); ctx.fillStyle=g; ctx.arc(r.x,r.y,r.r,0,Math.PI*2); ctx.fill();
-          if(Math.hypot(r.x-ship.x,r.y-ship.y) < r.r + ship.r - 3){
-            running = false; best = Math.max(best, Math.floor(score)); localStorage.setItem("oh_orbit_best", String(best));
-            bestHud.textContent = "Best: " + best;
-            document.getElementById("ovTitle").textContent = "Score: " + Math.floor(score);
-            ov.style.display = "grid";
-          }
-          if(r.y > h + 40) rocks.splice(i,1);
-        }
-        const glow = ctx.createRadialGradient(ship.x,ship.y,2,ship.x,ship.y,30);
-        glow.addColorStop(0,"rgba(129,140,248,.65)"); glow.addColorStop(1,"rgba(129,140,248,0)");
-        ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(ship.x,ship.y,30,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle = "#e0e7ff"; ctx.beginPath(); ctx.moveTo(ship.x,ship.y-16); ctx.lineTo(ship.x-12,ship.y+12); ctx.lineTo(ship.x+12,ship.y+12); ctx.closePath(); ctx.fill();
-      }
-      requestAnimationFrame(loop);
-    }
-    requestAnimationFrame(loop);
-  </script>
-</body>
-</html>
-\`\`\``
-          : demoLoginFormCode;
-
-      const liveSources = backendIntent?.webSources ?? [];
-      const deepResearchSourcesMd =
-        liveSources.length > 0
-          ? liveSources
-              .slice(0, 5)
-              .map((s, idx) => `${idx + 1}. **[${s.title}](${s.url})** — ${s.snippet || s.source}`)
-              .join("\n")
-          : usePersian
-            ? "منبع آنلاین مستقیمی برای این عبارت برنگشت؛ تحلیل بر پایه دانش پایه انجام می‌شود."
-            : "No live web excerpts returned for this query; falling back to first-principles synthesis.";
-
-      const demoReply =
-        resolvedSkill === "game_builder"
-          ? usePersian
-            ? `دارم یک **بازی آرکید روان و ریسپانسیو** با نورپردازی و کنترل هم‌زمان لمسی و کیبورد برات می‌سازم.\n\n${demoPreviewCode}\n\nبازی آماده است! روی کارت بالا کلیک کن یا صفحه رو به چپ ورق بزن تا همین الان بازی کنی.`
-            : `Building a smooth, responsive **Arcade Game** with lighting and dual keyboard/touch controls.\n\n${demoPreviewCode}\n\nYour game is ready! Tap the preview card above or swipe left to play.`
-          : resolvedSkill === "web_builder" || needsPreview
-            ? usePersian
-              ? `حتماً! دارم یک **فرم ورود مدرن و تعاملی** با طراحی شیشه‌ای و قابلیت نمایش/مخفی کردن رمز عبور برات می‌سازم.\n\n${demoPreviewCode}\n\nفرم ورود آماده شد! برای دیدن و تست کردنش روی کارت بالا کلیک کن یا صفحه رو به سمت چپ ورق بزن.`
-              : `Sure! I'm building a modern, interactive **Login Form** with a glassmorphic card and show/hide password toggle.\n\n${demoPreviewCode}\n\nYour login form is ready! Click the preview card above or swipe left to try it out.`
-            : resolvedSkill === "deep_research"
-              ? usePersian
-                ? `### نتیجه بررسی و جستجوی عمیق\n\nاسکیل **سرچ و تحلیل عمیق** در بکند فعال شد و **${liveSources.length} منبع زنده از وب** برای «${quote || "موضوع"}» بازیابی کرد:\n\n${deepResearchSourcesMd}\n\nدر اتصال به مدل هوش مصنوعی واقعی، تمام این منابع به‌صورت خودکار وارد کانتکست تحلیل عمیق مدل می‌شوند تا پاسخ مستند، دقیق و همراه با ارجاع تولید شود.`
-                : `### Deep Research Summary\n\nThe backend **Deep Research** skill retrieved **${liveSources.length} live web sources** for "${quote || "your query"}":\n\n${deepResearchSourcesMd}\n\nWhen connected to a real AI model, these live sources are grounded directly into the model's analytical reasoning context with inline citations.`
-              : usePersian
-                ? `پیام «${quote || "تست"}» توسط اسکیل **چت طبیعی** دریافت شد.\n\nاین یک پاسخ آزمایشی محلی بدون اتصال به API هوش مصنوعی است تا مصرف زنده‌ی کریدیت (باقیمانده پس از این پیام: **${remainingAfter}**) و تشخیص خودکار اسکیل در بکند را ببینید.`
-                : `Your message ("${quote || "Test"}") was routed to the **Natural Chat** skill.\n\nThis is a local preview reply (no external AI API call) so you can test live credit drain (**${remainingAfter} credits** remaining after this reply) and backend skill routing.`;
-
-      const chunks = demoReply.match(needsPreview ? /.{1,48}/gs : /.{1,6}/gs) ?? [demoReply];
-      try {
-        for (const chunk of chunks) {
-          if (controller.signal.aborted) break;
-          await new Promise<void>((resolve) => {
-            const timer = window.setTimeout(resolve, 48);
-            controller.signal.addEventListener(
-              "abort",
-              () => {
-                window.clearTimeout(timer);
-                resolve();
-              },
-              { once: true },
-            );
-          });
-          if (controller.signal.aborted) break;
-          set((state) => {
-            if (!state.streaming || state.streaming.messageId !== assistantId) return state;
-            return {
-              streaming: {
-                ...state.streaming,
-                content: state.streaming.content + chunk,
-              },
-            };
-          });
-        }
-
-        const finalContent = get().streaming?.content || "";
-        const persisted = get().messages.find((m) => m.id === assistantId);
-        const finished: Message = {
-          ...(persisted ?? {
-            id: assistantId,
-            chatId: chat.id,
-            role: "assistant",
-            parentId: null,
-            attachments: [],
-            createdAt: startedAt,
-          }),
-          providerId: provider.id,
-          modelId: model.modelId,
-          skillId: resolvedSkill,
-          ...(resolvedSourcesCount > 0 ? { skillSourcesCount: resolvedSourcesCount } : {}),
-          content: finalContent,
-          stats: {
-            latencyMs: Date.now() - startedAt,
-            tokensIn: estimateMessages(thread),
-            tokensOut: estimateTokens(finalContent),
-            finishReason: controller.signal.aborted ? "aborted" : "stop",
-          },
-        };
-        await db.messages.put(finished);
-        if (finalContent && !controller.signal.aborted) {
-          useAuthStore.getState().consumeLocalCredit(1);
-          if (auth.profile) {
-            void import("@/lib/devAdminMock").then(({ recordDevUserMessage }) =>
-              recordDevUserMessage({
-                userId: auth.profile!.id,
-                email: auth.profile!.email,
-                displayName: auth.profile!.displayName,
-                modelName: model.displayName,
-                providerName: "OpenHarneks",
-                source: "default",
-                tokens: (finished.stats?.tokensIn ?? 0) + (finished.stats?.tokensOut ?? 0),
-              }),
-            );
-          }
-        }
-        set((state) => ({
-          messages: state.messages.map((m) => (m.id === assistantId ? finished : m)),
-          streaming: null,
-          error: null,
-        }));
-      } finally {
-        activeAbort = null;
-      }
       return;
     }
 
@@ -1240,6 +977,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
             }),
             providerId: "router",
             modelId: model.id,
+            modelDisplayName: router.name,
             ...(result.skillId ? { skillId: result.skillId } : {}),
             ...(result.skillSourcesCount ? { skillSourcesCount: result.skillSourcesCount } : {}),
             content: finalContent,
@@ -1260,8 +998,11 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
             error: finished.error ? { kind: "unknown", message: "error.empty" } : null,
           }));
         } catch (err) {
-          const apiError = err as { kind?: ErrorKind; message?: string };
+          const apiError = err as { kind?: ErrorKind; message?: string; code?: string };
           const partial = get().streaming?.content ?? "";
+          if (apiError.code === "credits_exhausted" || partial) {
+            void useAuthStore.getState().refresh();
+          }
           const errMessage = emitted
             ? "router.midStreamInterrupted"
             : (apiError.message ?? "error.generic");
@@ -1294,12 +1035,9 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       try {
         const settings = useSettingsStore.getState().settings;
         const activeSkillMode = useUiStore.getState().skillMode;
+        const isElementEdit = Boolean(thread[thread.length - 1]?.editContext);
         const intent = await checkBackendPreviewIntent(
-          thread.map((m) => ({
-            role: m.role,
-            content: m.content,
-            hasImages: m.attachments.some((id) => attachmentMap.get(id)?.kind === "image"),
-          })),
+          buildIntentMessages(thread, attachmentMap),
           controller.signal,
           activeSkillMode,
         );
@@ -1316,7 +1054,10 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
               : state,
           );
         }
-        const skillInstruction = (intent?.systemPrompt ?? intent?.builderSystemPrompt ?? "").trim();
+        const rawSkillInstruction = (intent?.systemPrompt ?? intent?.builderSystemPrompt ?? "").trim();
+        const skillInstruction = isElementEdit
+          ? CLIENT_ELEMENT_EDIT_SYSTEM_PROMPT
+          : rawSkillInstruction;
 
         interface ClientRouterMember {
           id: string;
@@ -1330,38 +1071,19 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
         }
 
         let members: ClientRouterMember[] = [];
-        if (router.source === "dev" && import.meta.env.DEV) {
-          const { devRouterTarget } = await import("@/lib/devAdminMock");
-          const devTarget = await devRouterTarget(routerId);
-          if (devTarget) {
-            members = devTarget.members.map((m) => ({
-              id: m.id,
-              upstreamId: m.upstreamId,
-              displayName: m.displayName,
-              provider: devTarget.provider,
-              model: {
-                id: m.id,
-                providerId: devTarget.provider.id,
-                modelId: m.upstreamId,
-                displayName: m.displayName,
-                capabilities: ["text"],
-                tier: "free",
-                pricingTier: "free",
-                enabled: true,
-                favorite: false,
-                order: 0,
-                source: "api",
-                createdAt: startedAt,
-                updatedAt: startedAt,
-              },
-              apiKeys: devTarget.apiKeys,
-              providerName: devTarget.providerName,
-              billingSource: "site",
-            }));
-          }
-        } else {
-          const localProvider = allProviders.find((p) => p.id === router.providerId && p.enabled);
-          if (localProvider) {
+        {
+          const targetProviderIds =
+            router.providerIds && router.providerIds.length > 0
+              ? router.providerIds
+              : router.providerId
+                ? [router.providerId]
+                : [];
+          const attachedProviders = targetProviderIds
+            .map((pid) => allProviders.find((p) => p.id === pid && p.enabled))
+            .filter((p): p is Provider => Boolean(p));
+
+          const seenMemberModelIds = new Set<string>();
+          for (const localProvider of attachedProviders) {
             let storedKey = "";
             if (!localProvider.managed) {
               try {
@@ -1374,16 +1096,20 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
             const candidates = getProviderKeyCandidates(localProvider, storedKey);
             const keys = candidates.length > 0 ? candidates : [storedKey.trim()];
             const eligible = eligibleFreeModelsForLocalProvider(localProvider, allModels);
-            members = eligible.map((m) => ({
-              id: m.id,
-              upstreamId: m.modelId,
-              displayName: m.displayName,
-              provider: localProvider,
-              model: m,
-              apiKeys: keys,
-              providerName: localProvider.name,
-              billingSource: "byok",
-            }));
+            for (const m of eligible) {
+              if (seenMemberModelIds.has(m.id)) continue;
+              seenMemberModelIds.add(m.id);
+              members.push({
+                id: m.id,
+                upstreamId: m.modelId,
+                displayName: m.displayName,
+                provider: localProvider,
+                model: m,
+                apiKeys: keys,
+                providerName: localProvider.name,
+                billingSource: "byok",
+              });
+            }
           }
         }
 
@@ -1478,15 +1204,19 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
           },
         });
 
+        const adminNativeRouter = isAdminPublicRouter(router);
         if (!failover.ok || !failover.value || !failover.usedMember) {
           const partial = get().streaming?.content ?? "";
           const errMsg = failover.midStreamInterrupted
             ? "router.midStreamInterrupted"
-            : failover.error || "error.generic";
+            : adminNativeRouter
+              ? "error.generic"
+              : (failover.error || "error.generic");
           const persisted = get().messages.find((m) => m.id === assistantId);
           if (persisted) {
             const failed: Message = {
               ...persisted,
+              ...(adminNativeRouter ? { modelId: router.selectionId, modelDisplayName: router.name } : {}),
               content: partial,
               error: { kind: "unknown", message: errMsg },
             };
@@ -1520,7 +1250,10 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
             createdAt: startedAt,
           }),
           providerId: "router",
-          modelId: usedMember.upstreamId,
+          // Admin public routers never persist or expose the underlying model id
+          // on the user-visible message; keep the native router selection + name.
+          modelId: adminNativeRouter ? router.selectionId : usedMember.upstreamId,
+          modelDisplayName: router.name,
           ...(skillId ? { skillId } : {}),
           ...(skillSourcesCount > 0 ? { skillSourcesCount } : {}),
           content: finalContent,
@@ -1536,19 +1269,6 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
         await db.messages.put(finished);
         if (finalContent && usedMember.billingSource === "site") {
           useAuthStore.getState().consumeLocalCredit(1);
-          if (import.meta.env.DEV && auth.profile) {
-            void import("@/lib/devAdminMock").then(({ recordDevUserMessage }) =>
-              recordDevUserMessage({
-                userId: auth.profile!.id,
-                email: auth.profile!.email,
-                displayName: auth.profile!.displayName,
-                modelName: usedMember.displayName,
-                providerName: usedMember.providerName,
-                source: "admin",
-                tokens: (finished.stats?.tokensIn ?? 0) + (finished.stats?.tokensOut ?? 0),
-              }),
-            );
-          }
         }
         set((state) => ({
           messages: state.messages.map((m) => (m.id === assistantId ? finished : m)),
@@ -1559,23 +1279,6 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
         activeAbort = null;
       }
       return;
-    }
-
-    // Local preview: resolve the site model to the real provider + keys stored
-    // by the admin panel, then run it through the normal streaming path with
-    // full key rotation and live admin usage tracking.
-    let forcedKey: string | null = null;
-    let forcedKeys: string[] | null = null;
-    let devAdminMeta: { modelDisplayName: string; providerName: string } | null = null;
-    if (provider.id === SERVER_PROVIDER_ID && import.meta.env.DEV) {
-      const { devChatTarget } = await import("@/lib/devAdminMock");
-      const dev = await devChatTarget(model.modelId, model.id);
-      if (dev) {
-        provider = dev.provider;
-        forcedKey = dev.apiKey;
-        forcedKeys = dev.apiKeys;
-        devAdminMeta = { modelDisplayName: dev.modelDisplayName, providerName: dev.providerName };
-      }
     }
 
     if (provider.id === SERVER_PROVIDER_ID) {
@@ -1670,8 +1373,11 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
           error: finished.error ? { kind: "unknown", message: "error.empty" } : null,
         }));
       } catch (err) {
-        const apiError = err as { kind?: ErrorKind; message?: string };
+        const apiError = err as { kind?: ErrorKind; message?: string; code?: string };
         const partial = get().streaming?.content ?? "";
+        if (apiError.code === "credits_exhausted" || partial) {
+          void useAuthStore.getState().refresh();
+        }
         const persisted = get().messages.find((m) => m.id === assistantId);
         if (persisted) {
           const failed: Message = {
@@ -1702,11 +1408,7 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
     // without changing the model they picked.
     const allProviders = useProvidersStore.getState().providers;
     const allModels = useProvidersStore.getState().models;
-    // When devChatTarget resolved a server-preview model, stay strictly on that
-    // dev-admin provider instead of mixing its key with BYOK routes.
-    const routes = forcedKey
-      ? [{ provider, model }]
-      : orderRoutes(buildModelRoutes(model, allProviders, allModels));
+    const routes = orderRoutes(buildModelRoutes(model, allProviders, allModels));
     if (routes.length === 0) routes.push({ provider, model });
 
     const attachmentMap = new Map(get().attachments.map((a) => [a.id, a]));
@@ -1740,12 +1442,9 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       // starting BYOK streaming so: (1) build chats unlock the preview slider on
       // frame 0, and (2) real BYOK models receive the full tailored skill prompt.
       const activeSkillMode = useUiStore.getState().skillMode;
+      const isElementEdit = Boolean(thread[thread.length - 1]?.editContext);
       const byokIntent = await checkBackendPreviewIntent(
-        thread.map((m) => ({
-          role: m.role,
-          content: m.content,
-          hasImages: m.attachments.some((id) => attachmentMap.get(id)?.kind === "image"),
-        })),
+        buildIntentMessages(thread, attachmentMap),
         controller.signal,
         activeSkillMode,
       );
@@ -1768,7 +1467,10 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
             : state,
         );
       }
-      const skillInstruction = (byokIntent?.systemPrompt ?? byokIntent?.builderSystemPrompt ?? "").trim();
+      const rawByokInstruction = (byokIntent?.systemPrompt ?? byokIntent?.builderSystemPrompt ?? "").trim();
+      const skillInstruction = isElementEdit
+        ? CLIENT_ELEMENT_EDIT_SYSTEM_PROMPT
+        : rawByokInstruction;
 
       let result: Awaited<ReturnType<typeof streamChat>> | null = null;
       let lastError: unknown = null;
@@ -1786,21 +1488,15 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
 
         let storedKey = "";
         if (!routeProvider.managed) {
-          if (forcedKey) {
-            storedKey = forcedKey;
-          } else {
-            try {
-              storedKey = (await getProviderKey(routeProvider.id)) ?? "";
-            } catch {
-              set({ error: { kind: "auth", message: "error.vaultLocked" } });
-              return;
-            }
+          try {
+            storedKey = (await getProviderKey(routeProvider.id)) ?? "";
+          } catch {
+            set({ error: { kind: "auth", message: "error.vaultLocked" } });
+            return;
           }
         }
         const trimmedStored = storedKey.trim();
-        const keyCandidates = forcedKeys && forcedKeys.length > 0
-          ? forcedKeys
-          : getProviderKeyCandidates(routeProvider, storedKey);
+        const keyCandidates = getProviderKeyCandidates(routeProvider, storedKey);
         // Never falsely report "no stored key" when the user DOES have a stored
         // key that was only cooling down from an earlier error on another model
         // (e.g. a 402 on a paid model or 429/404 on one free model). Only skip
@@ -1896,19 +1592,6 @@ export const useChatsStore = create<ChatsState>()((set, get) => ({
       await db.messages.put(finished);
       if (finalContent) {
         useAuthStore.getState().consumeLocalCredit(1);
-        if (import.meta.env.DEV && auth.profile && devAdminMeta) {
-          void import("@/lib/devAdminMock").then(({ recordDevUserMessage }) =>
-            recordDevUserMessage({
-              userId: auth.profile!.id,
-              email: auth.profile!.email,
-              displayName: auth.profile!.displayName,
-              modelName: devAdminMeta!.modelDisplayName,
-              providerName: devAdminMeta!.providerName,
-              source: "admin",
-              tokens: (finished.stats?.tokensIn ?? 0) + (finished.stats?.tokensOut ?? 0),
-            }),
-          );
-        }
       }
       set((state) => ({
         messages: state.messages.map((m) => (m.id === assistantId ? finished : m)),

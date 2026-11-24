@@ -1,5 +1,6 @@
 // Reusable UI primitive corner-menu; adjust its default appearance and behavior here.
 import * as React from "react";
+import { attachOutsideDismiss } from "@/lib/outsideDismiss";
 import "./corner-menu.css";
 
 /*
@@ -362,16 +363,14 @@ export function CornerMenu({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, requestOpen]);
 
-  // Outside press closes. The scrim covers the rest of the page, so this mostly
-  // guards against presses that land on the scrim itself.
+  // Outside press closes reliably on mobile & desktop.
   React.useEffect(() => {
     if (!open) return;
-    const onDown = (event: PointerEvent) => {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      requestOpen(false);
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    return () => document.removeEventListener("pointerdown", onDown, true);
+    return attachOutsideDismiss({
+      isInside: (target, path) =>
+        Boolean(rootRef.current?.contains(target) || (path && rootRef.current && path.includes(rootRef.current))),
+      onDismiss: () => requestOpen(false),
+    });
   }, [open, requestOpen]);
 
   // Re-measure and snap to the final frame while open (rotation, keyboard).

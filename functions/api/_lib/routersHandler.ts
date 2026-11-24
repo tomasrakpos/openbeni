@@ -39,7 +39,9 @@ export interface RouterRow {
   id: string;
   owner_user_id: string | null;
   provider_id: string | null;
+  provider_ids?: string[] | null;
   user_provider_id: string | null;
+  user_provider_ids?: string[] | null;
   name: string;
   type: "free";
   enabled: boolean;
@@ -89,8 +91,11 @@ export interface PublicRouterDto {
   id: string;
   ownerScope: "public" | "user";
   providerId: string | null;
+  providerIds: string[];
   userProviderId: string | null;
+  userProviderIds: string[];
   providerName?: string;
+  providerNames?: string[];
   name: string;
   type: "free";
   enabled: boolean;
@@ -138,6 +143,42 @@ function one<T>(value: T | T[] | null | undefined): T | null {
   return Array.isArray(value) ? (value[0] ?? null) : value;
 }
 
+function uniqueStrings(values: readonly (string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function parseProviderIdsInput(body: Json, arrayKey: string, singleKey: string): string[] {
+  const fromArray = Array.isArray(body[arrayKey])
+    ? (body[arrayKey] as unknown[]).map((v) => str(v, 80))
+    : [];
+  const fromSingle = str(body[singleKey], 80);
+  return uniqueStrings([...fromArray, fromSingle]);
+}
+
+function routerAdminProviderIds(row: Pick<RouterRow, "provider_id" | "provider_ids">): string[] {
+  return uniqueStrings([...(Array.isArray(row.provider_ids) ? row.provider_ids : []), row.provider_id]);
+}
+
+function routerUserProviderIds(row: Pick<RouterRow, "user_provider_id" | "user_provider_ids">): string[] {
+  return uniqueStrings([
+    ...(Array.isArray(row.user_provider_ids) ? row.user_provider_ids : []),
+    row.user_provider_id,
+  ]);
+}
+
+function inList(ids: readonly string[]): string {
+  return `in.(${ids.map((id) => `"${id.replace(/"/g, "")}"`).join(",")})`;
+}
+
 function json(request: Request, env: RoutersEnv, data: unknown, status = 200): Response {
   return new Response(JSON.stringify({ data }), {
     status,
@@ -156,10 +197,14 @@ function resolveCatalogPricing(row: CatalogModelMinimal): ModelPricingClass {
   return normalizeModelPricing(row.tier);
 }
 
+/**
+ * Admin free routers remain eligible to route across every verified free model
+ * of their enabled provider — even when the admin hides (`enabled = false`)
+ * individual models from the public catalog list.
+ */
 function isCatalogModelFreeEligible(row: CatalogModelMinimal, providerEnabled = true): boolean {
   return (
     providerEnabled &&
-    row.enabled === true &&
     row.upstream_verified === true &&
     !row.site_paid &&
     resolveCatalogPricing(row) === "free"
@@ -217,15 +262,19 @@ async function fetchPublicRoutersWithCounts(
   }
 
   return routers.map((router) => {
-    const provider = router.provider_id ? providerMap.get(router.provider_id) : undefined;
-    const providerEnabled = provider ? provider.enabled : false;
+    const pIds = routerAdminProviderIds(router);
+    const pNames = pIds
+      .map((pid) => providerMap.get(pid)?.name)
+      .filter((name): name is string => Boolean(name));
     const rawMembers = (membersByRouter.get(router.id) ?? []).filter((m) => m.enabled);
     const activeModels: CatalogModelMinimal[] = [];
     for (const m of rawMembers) {
       if (!m.catalog_model_id) continue;
       const model = modelMap.get(m.catalog_model_id);
       if (!model) continue;
-      if (isCatalogModelFreeEligible(model, providerEnabled)) {
+      const modelProvider = providerMap.get(model.provider_id);
+      const modelProviderEnabled = modelProvider ? modelProvider.enabled : false;
+      if (isCatalogModelFreeEligible(model, modelProviderEnabled)) {
         activeModels.push(model);
       }
     }
@@ -236,14 +285,17 @@ async function fetchPublicRoutersWithCounts(
     return {
       id: router.id,
       ownerScope: "public",
-      providerId: router.provider_id,
+      providerId: includeDisabled ? (pIds[0] ?? null) : null,
+      providerIds: includeDisabled ? pIds : [],
       userProviderId: null,
-      providerName: includeDisabled ? provider?.name : "OpenHarneks",
+      userProviderIds: [],
+      providerName: includeDisabled ? (pNames.join(" + ") || undefined) : "OpenHarneks",
+      providerNames: includeDisabled ? pNames : [],
       name: router.name,
       type: router.type,
       enabled: router.enabled,
       activeMemberCount: activeModels.length,
-      memberModelIds: activeModels.map((m) => m.id),
+      memberModelIds: includeDisabled ? activeModels.map((m) => m.id) : [],
       capabilities: [...caps],
       billingSource: "site",
       consumesCredits: true,
@@ -290,15 +342,19 @@ async function fetchUserRoutersWithCounts(
   }
 
   return routers.map((router) => {
-    const provider = router.user_provider_id ? providerMap.get(router.user_provider_id) : undefined;
-    const providerEnabled = provider ? provider.enabled : false;
+    const upIds = routerUserProviderIds(router);
+    const upNames = upIds
+      .map((pid) => providerMap.get(pid)?.name)
+      .filter((name): name is string => Boolean(name));
     const rawMembers = (membersByRouter.get(router.id) ?? []).filter((m) => m.enabled);
     const activeModels: UserModelMinimal[] = [];
     for (const m of rawMembers) {
       if (!m.user_model_id) continue;
       const model = modelMap.get(m.user_model_id);
       if (!model) continue;
-      if (isUserModelFreeEligible(model, providerEnabled)) {
+      const modelProvider = providerMap.get(model.user_provider_id);
+      const modelProviderEnabled = modelProvider ? modelProvider.enabled : false;
+      if (isUserModelFreeEligible(model, modelProviderEnabled)) {
         activeModels.push(model);
       }
     }
@@ -310,8 +366,11 @@ async function fetchUserRoutersWithCounts(
       id: router.id,
       ownerScope: "user",
       providerId: null,
-      userProviderId: router.user_provider_id,
-      providerName: provider?.name,
+      providerIds: [],
+      userProviderId: upIds[0] ?? null,
+      userProviderIds: upIds,
+      providerName: upNames.join(" + ") || undefined,
+      providerNames: upNames,
       name: router.name,
       type: router.type,
       enabled: router.enabled,
@@ -327,37 +386,43 @@ async function fetchUserRoutersWithCounts(
 }
 
 /**
- * Synchronizes every free router attached to an admin provider so that
- * disabled, deleted, or non-free models are removed and active free models are attached.
+ * Synchronizes every free router that includes `providerId` (single- or
+ * multi-provider) so verified free models across ALL attached providers stay
+ * active in `router_members` (even when hidden from the public catalog), while
+ * paid/unverified/deleted models are removed.
  */
 export async function syncAdminProviderRouters(env: RoutersEnv, providerId: string): Promise<void> {
   if (!supabaseConfigured(env)) return;
   try {
-    const routers = await sbJson<RouterRow[]>(
+    const allAdminRouters = await sbJson<RouterRow[]>(
       env,
-      `routers?select=*&owner_user_id=is.null&provider_id=${eq(providerId)}&type=eq.free`,
+      "routers?select=*&owner_user_id=is.null&type=eq.free",
     );
+    const routers = allAdminRouters.filter((r) => routerAdminProviderIds(r).includes(providerId));
     if (routers.length === 0) return;
 
-    const models = await sbJson<CatalogModelMinimal[]>(
+    const neededProviderIds = uniqueStrings(routers.flatMap((r) => routerAdminProviderIds(r)));
+    const allModels = await sbJson<CatalogModelMinimal[]>(
       env,
-      `catalog_models?select=id,provider_id,upstream_id,display_name,context_window,capabilities,tier,pricing,site_paid,enabled,upstream_verified&provider_id=${eq(providerId)}&order=display_name.asc`,
+      `catalog_models?select=id,provider_id,upstream_id,display_name,context_window,capabilities,tier,pricing,site_paid,enabled,upstream_verified&provider_id=${inList(neededProviderIds)}&order=display_name.asc`,
     ).catch(() => []);
 
-    const eligible = filterFreeEligibleModels(
-      models.map((m, idx) => ({
-        id: m.id,
-        modelId: m.upstream_id,
-        displayName: m.display_name,
-        pricing: resolveCatalogPricing(m),
-        enabled: m.enabled && m.upstream_verified,
-        locked: Boolean(m.site_paid),
-        position: idx,
-      })),
-    );
-    const eligibleIds = new Set(eligible.map((m) => m.id));
-
     for (const router of routers) {
+      const pIdSet = new Set(routerAdminProviderIds(router));
+      const routerModels = allModels.filter((m) => pIdSet.has(m.provider_id));
+      const eligible = filterFreeEligibleModels(
+        routerModels.map((m, idx) => ({
+          id: m.id,
+          modelId: m.upstream_id,
+          displayName: m.display_name,
+          pricing: resolveCatalogPricing(m),
+          enabled: m.upstream_verified,
+          locked: Boolean(m.site_paid),
+          position: idx,
+        })),
+      );
+      const eligibleIds = new Set(eligible.map((m) => m.id));
+
       const existing = await sbJson<RouterMemberRow[]>(
         env,
         `router_members?select=*&router_id=${eq(router.id)}&order=position.asc`,
@@ -409,9 +474,9 @@ export async function createAdminRouter(request: Request, env: RoutersEnv): Prom
   if (!parsed.ok || !isObject(parsed.value)) {
     return jsonError(request, env, 400, "Invalid request body.");
   }
-  const providerId = str(parsed.value.providerId, 80).trim();
+  const providerIds = parseProviderIdsInput(parsed.value, "providerIds", "providerId");
   const rawName = str(parsed.value.name, 80);
-  if (!providerId) return jsonError(request, env, 400, "Provider ID is required.");
+  if (providerIds.length === 0) return jsonError(request, env, 400, "At least one provider is required.");
 
   const [existingRouters, allCatalogModels, providerModels] = await Promise.all([
     sbJson<RouterRow[]>(env, "routers?select=id,name&owner_user_id=is.null").catch(() => []),
@@ -421,7 +486,7 @@ export async function createAdminRouter(request: Request, env: RoutersEnv): Prom
     ).catch(() => []),
     sbJson<CatalogModelMinimal[]>(
       env,
-      `catalog_models?select=id,provider_id,upstream_id,display_name,context_window,capabilities,tier,pricing,site_paid,enabled,upstream_verified&provider_id=${eq(providerId)}&order=display_name.asc`,
+      `catalog_models?select=id,provider_id,upstream_id,display_name,context_window,capabilities,tier,pricing,site_paid,enabled,upstream_verified&provider_id=${inList(providerIds)}&order=display_name.asc`,
     ).catch(() => []),
   ]);
 
@@ -445,7 +510,7 @@ export async function createAdminRouter(request: Request, env: RoutersEnv): Prom
       modelId: m.upstream_id,
       displayName: m.display_name,
       pricing: resolveCatalogPricing(m),
-      enabled: m.enabled && m.upstream_verified,
+      enabled: m.upstream_verified,
       locked: Boolean(m.site_paid),
       position: idx,
     })),
@@ -455,25 +520,48 @@ export async function createAdminRouter(request: Request, env: RoutersEnv): Prom
       request,
       env,
       400,
-      "This provider has no verified free models available for a free router.",
+      "The selected provider(s) have no verified free models available for a free router.",
       "no_free_models",
     );
   }
 
-  const createdRows = await sbJson<RouterRow[]>(env, "routers", {
-    method: "POST",
-    headers: { Prefer: "return=representation" },
-    body: JSON.stringify([
-      {
-        owner_user_id: null,
-        provider_id: providerId,
-        user_provider_id: null,
-        name: check.normalized,
-        type: "free",
-        enabled: true,
-      },
-    ]),
-  });
+  let createdRows: RouterRow[];
+  try {
+    createdRows = await sbJson<RouterRow[]>(env, "routers", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify([
+        {
+          owner_user_id: null,
+          provider_id: providerIds[0],
+          provider_ids: providerIds,
+          user_provider_id: null,
+          name: check.normalized,
+          type: "free",
+          enabled: true,
+        },
+      ]),
+    });
+  } catch (err) {
+    // Graceful fallback if DB hasn't applied 0008_multi_provider_routers.sql yet
+    // (router_members still links all eligible models across every selected provider).
+    createdRows = await sbJson<RouterRow[]>(env, "routers", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify([
+        {
+          owner_user_id: null,
+          provider_id: providerIds[0],
+          user_provider_id: null,
+          name: check.normalized,
+          type: "free",
+          enabled: true,
+        },
+      ]),
+    }).catch(() => {
+      throw err;
+    });
+  }
   const created = createdRows[0];
   if (!created) return jsonError(request, env, 500, "Could not create router.");
 
@@ -608,22 +696,26 @@ export async function handleRouters(request: Request, env: RoutersEnv = {}): Pro
   }
   const userId = auth.profile.id;
 
-  // POST /api/routers -> create a user free router
+  // POST /api/routers -> create a user free router (single or multi-provider)
   if (method === "POST" && !routerId) {
     const parsed = await readJsonBody(request);
     if (!parsed.ok || !isObject(parsed.value)) {
       return jsonError(request, env, 400, "Invalid request body.");
     }
-    const userProviderId = str(parsed.value.userProviderId, 80).trim();
+    const userProviderIds = parseProviderIdsInput(parsed.value, "userProviderIds", "userProviderId");
     const rawName = str(parsed.value.name, 80);
-    if (!userProviderId) return jsonError(request, env, 400, "Provider ID is required.");
+    if (userProviderIds.length === 0) {
+      return jsonError(request, env, 400, "At least one provider is required.");
+    }
 
-    // Verify ownership of userProviderId
+    // Verify ownership of every selected userProviderId
     const providers = await sbJson<UserProviderRow[]>(
       env,
-      `user_providers?select=id,name,enabled&id=${eq(userProviderId)}&user_id=${eq(userId)}&limit=1`,
+      `user_providers?select=id,name,enabled&id=${inList(userProviderIds)}&user_id=${eq(userId)}`,
     );
-    if (!providers[0]) {
+    const ownedSet = new Set(providers.map((p) => p.id));
+    const validProviderIds = userProviderIds.filter((pid) => ownedSet.has(pid));
+    if (validProviderIds.length === 0) {
       return jsonError(request, env, 404, "Provider not found.");
     }
 
@@ -659,7 +751,8 @@ export async function handleRouters(request: Request, env: RoutersEnv = {}): Pro
       return jsonError(request, env, 400, check.message ?? "Invalid router name.", check.code);
     }
 
-    const providerModels = userModels.filter((m) => m.user_provider_id === userProviderId);
+    const validSet = new Set(validProviderIds);
+    const providerModels = userModels.filter((m) => validSet.has(m.user_provider_id));
     const eligible = filterFreeEligibleModels(
       providerModels.map((m, idx) => ({
         id: m.id,
@@ -675,25 +768,46 @@ export async function handleRouters(request: Request, env: RoutersEnv = {}): Pro
         request,
         env,
         400,
-        "This provider has no verified free models available for a free router.",
+        "The selected provider(s) have no verified free models available for a free router.",
         "no_free_models",
       );
     }
 
-    const createdRows = await sbJson<RouterRow[]>(env, "routers", {
-      method: "POST",
-      headers: { Prefer: "return=representation" },
-      body: JSON.stringify([
-        {
-          owner_user_id: userId,
-          provider_id: null,
-          user_provider_id: userProviderId,
-          name: check.normalized,
-          type: "free",
-          enabled: true,
-        },
-      ]),
-    });
+    let createdRows: RouterRow[];
+    try {
+      createdRows = await sbJson<RouterRow[]>(env, "routers", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify([
+          {
+            owner_user_id: userId,
+            provider_id: null,
+            user_provider_id: validProviderIds[0],
+            user_provider_ids: validProviderIds,
+            name: check.normalized,
+            type: "free",
+            enabled: true,
+          },
+        ]),
+      });
+    } catch (err) {
+      createdRows = await sbJson<RouterRow[]>(env, "routers", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify([
+          {
+            owner_user_id: userId,
+            provider_id: null,
+            user_provider_id: validProviderIds[0],
+            name: check.normalized,
+            type: "free",
+            enabled: true,
+          },
+        ]),
+      }).catch(() => {
+        throw err;
+      });
+    }
     const created = createdRows[0];
     if (!created) return jsonError(request, env, 500, "Could not create router.");
 
@@ -823,17 +937,19 @@ export async function resolveRouterForChat(
   }
 
   if (router.owner_user_id === null) {
-    // Admin public router -> resolve catalog_models + provider rows
+    // Admin public router -> resolve catalog_models + provider rows across all attached providers
     const catalogIds = rawMembers
       .map((m) => m.catalog_model_id)
       .filter((id): id is string => Boolean(id));
     if (catalogIds.length === 0) {
       return { router, billingSource: "site", members: [] };
     }
-    const models = await sbJson<CatalogModelMinimal[]>(
-      env,
-      `catalog_models?select=*,providers(*)&provider_id=${eq(router.provider_id ?? "")}`,
-    ).catch(() => []);
+    const pIds = routerAdminProviderIds(router);
+    const modelsQuery =
+      pIds.length > 0 && catalogIds.length > 80
+        ? `catalog_models?select=*,providers(*)&provider_id=${inList(pIds)}`
+        : `catalog_models?select=*,providers(*)&id=${inList(catalogIds)}`;
+    const models = await sbJson<CatalogModelMinimal[]>(env, modelsQuery).catch(() => []);
     const byId = new Map(models.map((m) => [m.id, m]));
     const resolved: ResolvedRouterMember[] = [];
     for (const member of rawMembers) {
@@ -858,11 +974,19 @@ export async function resolveRouterForChat(
     return { router, billingSource: "site", members: resolved };
   }
 
-  // User personal router -> resolve user_models + user_providers
-  const models = await sbJson<UserModelMinimal[]>(
-    env,
-    `user_models?select=*,user_providers(*)&user_id=${eq(router.owner_user_id)}&user_provider_id=${eq(router.user_provider_id ?? "")}`,
-  ).catch(() => []);
+  // User personal router -> resolve user_models + user_providers across all attached providers
+  const userModelIds = rawMembers
+    .map((m) => m.user_model_id)
+    .filter((id): id is string => Boolean(id));
+  if (userModelIds.length === 0) {
+    return { router, billingSource: "byok", members: [] };
+  }
+  const upIds = routerUserProviderIds(router);
+  const userModelsQuery =
+    upIds.length > 0 && userModelIds.length > 80
+      ? `user_models?select=*,user_providers(*)&user_id=${eq(router.owner_user_id)}&user_provider_id=${inList(upIds)}`
+      : `user_models?select=*,user_providers(*)&user_id=${eq(router.owner_user_id)}&id=${inList(userModelIds)}`;
+  const models = await sbJson<UserModelMinimal[]>(env, userModelsQuery).catch(() => []);
   const byId = new Map(models.map((m) => [m.id, m]));
   const resolved: ResolvedRouterMember[] = [];
   for (const member of rawMembers) {

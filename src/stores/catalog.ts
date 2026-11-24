@@ -12,11 +12,6 @@ import { useProvidersStore } from "@/stores/providers";
 /** Synthetic provider id for the site's own (server-run) models. */
 export const SERVER_PROVIDER_ID = "prov_server";
 
-/** Dev-only local mock provider so credits & streaming UX can be tested without any AI API key. */
-export const DEMO_PROVIDER_ID = "prov_demo";
-export const DEMO_MODEL_ID = "demo:preview-chat";
-export const DEMO_WEB_DESIGN_MODEL_ID = "demo:web-design";
-
 export interface PublicServerModel {
   id: string;
   displayName: string;
@@ -25,7 +20,7 @@ export interface PublicServerModel {
   tier: "free" | "paid" | "unknown";
   /** Shown with a Paid badge; never run with the site's keys. */
   paid?: boolean;
-  /** Local preview only: the real upstream id to send to the provider. */
+  /** Optional upstream id override used when calling the provider. */
   upstreamId?: string;
 }
 
@@ -61,18 +56,6 @@ function writeCache(models: PublicServerModel[]): void {
   } catch {
     // Storage may be disabled; the in-memory list still works.
   }
-}
-
-/**
- * Local admin preview keeps its providers/models in the dev server's shared
- * store. Read them through a dynamic import so the mock (and this bridge) never
- * ships in a production build.
- */
-async function readDevCatalog(): Promise<PublicServerModel[] | null> {
-  if (!import.meta.env.DEV) return null;
-  const { devCatalogModels } = await import("@/lib/devAdminMock");
-  const models = await devCatalogModels();
-  return models as PublicServerModel[] | null;
 }
 
 export function serverProvider(): Provider {
@@ -163,10 +146,18 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
       });
     }
 
-    // Realtime: the admin panel broadcasts a tiny "catalog-changed" event after
-    // every mutation, so every connected picker refetches within seconds.
+    // Realtime: defer connecting `@supabase/supabase-js` (~225 KB + WebSocket)
+    // until after the page settles so first load stays blazing fast. Initial
+    // `/api/models` fetch runs immediately below.
+    let realtimeTimer: number | null = null;
     if (supabaseConfigured()) {
-      void subscribeRealtime();
+      const startRealtime = () => {
+        realtimeTimer = window.setTimeout(() => {
+          void subscribeRealtime();
+        }, 3500);
+      };
+      if (document.readyState === "complete") startRealtime();
+      else window.addEventListener("load", startRealtime, { once: true });
     }
 
     authUnsub = useAuthStore.subscribe((state, previous) => {
@@ -184,14 +175,6 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
     window.addEventListener("focus", () => {
       void get().refresh();
     });
-
-    if (import.meta.env.DEV) {
-      // Another tab owns the admin preview; pick up provider/model changes
-      // without waiting for the poll.
-      window.addEventListener("storage", () => {
-        void get().refresh();
-      });
-    }
 
     let pollDelay = POLL_MS;
     const scheduleNextPoll = () => {
@@ -214,6 +197,7 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
     scheduleNextPoll();
 
     window.addEventListener("pagehide", () => {
+      if (realtimeTimer) window.clearTimeout(realtimeTimer);
       if (pollTimer) window.clearTimeout(pollTimer);
       authUnsub?.();
       if (channel) void getSupabase()?.removeChannel(channel);
@@ -222,12 +206,6 @@ export const useCatalogStore = create<CatalogState>()((set, get) => ({
   },
 
   refresh: async () => {
-    const dev = await readDevCatalog();
-    if (dev) {
-      writeCache(dev);
-      setModels(dev);
-      return;
-    }
     try {
       const data = await apiFetch<PublicServerModel[]>("/api/models");
       const models = Array.isArray(data) ? data : [];
@@ -268,69 +246,9 @@ async function subscribeRealtime(): Promise<void> {
     });
 }
 
-export function demoProvider(): Provider {
-  return {
-    id: DEMO_PROVIDER_ID,
-    name: "Demo Preview",
-    baseUrl: "",
-    apiFormat: "openai",
-    auth: { header: "", prefix: "" },
-    extraHeaders: {},
-    timeoutMs: 30_000,
-    useProxy: false,
-    enabled: true,
-    favorite: false,
-    order: 9_999,
-    bundled: true,
-    managed: true,
-    paths: {},
-    hasKey: true,
-    createdAt: 0,
-    updatedAt: 0,
-  };
-}
-
-export function demoModel(): AIModel {
-  return {
-    id: DEMO_MODEL_ID,
-    providerId: DEMO_PROVIDER_ID,
-    modelId: "demo-preview-chat",
-    displayName: "Demo Chat (Mock Test)",
-    contextWindow: 16_000,
-    capabilities: ["text"],
-    tier: "free",
-    enabled: true,
-    favorite: false,
-    order: 9_999,
-    source: "manual",
-    createdAt: 0,
-    updatedAt: 0,
-  };
-}
-
-export function demoWebDesignModel(): AIModel {
-  return {
-    id: DEMO_WEB_DESIGN_MODEL_ID,
-    providerId: DEMO_PROVIDER_ID,
-    modelId: "demo-web-design",
-    displayName: "Web Design (Mock Test)",
-    contextWindow: 16_000,
-    capabilities: ["text"],
-    tier: "free",
-    enabled: true,
-    favorite: false,
-    order: 10_000,
-    source: "manual",
-    createdAt: 0,
-    updatedAt: 0,
-  };
-}
-
-/** Merged provider list for chat surfaces: user BYOK first, then server models (+ dev demo mock). */
+/** Merged provider list for chat surfaces: user BYOK first, then server models. */
 export function withServerProvider(providers: Provider[], serverModels: AIModel[]): Provider[] {
-  const next = serverModels.length > 0 ? [...providers, serverProvider()] : [...providers];
-  if (import.meta.env.DEV) next.push(demoProvider());
-  return next;
+  return serverModels.length > 0 ? [...providers, serverProvider()] : [...providers];
 }
 
 /** React hook: local BYOK providers plus the synthetic site provider. */
@@ -343,13 +261,12 @@ export function useAllProviders(): Provider[] {
   );
 }
 
-/** React hook: local BYOK models plus the site's enabled models (+ dev demo mock). */
+/** React hook: local BYOK models plus the site's enabled models. */
 export function useAllModels(): AIModel[] {
   const local = useProvidersStore((state) => state.models);
   const serverModels = useCatalogStore((state) => state.providerModels);
-  return React.useMemo(() => {
-    const base = serverModels.length > 0 ? [...local, ...serverModels] : [...local];
-    if (import.meta.env.DEV) base.push(demoModel(), demoWebDesignModel());
-    return base;
-  }, [local, serverModels]);
+  return React.useMemo(
+    () => (serverModels.length > 0 ? [...local, ...serverModels] : [...local]),
+    [local, serverModels],
+  );
 }

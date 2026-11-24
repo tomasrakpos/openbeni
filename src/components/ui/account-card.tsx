@@ -16,7 +16,12 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ChevronDown, MoreHorizontal } from "lucide-react";
-import GlassCard from "@/components/ui/glass-card";
+import {
+  SmokyButton,
+  resolveSiteSmokeColors,
+  type SmokeColors,
+} from "@/components/ui/smoky-button";
+import { attachOutsideDismiss } from "@/lib/outsideDismiss";
 import { cn } from "@/lib/utils";
 
 export type AccountUser = { name: string; email?: string; avatarUrl?: string | null };
@@ -54,16 +59,18 @@ const FRAME: CSSProperties = {
 
 const CSS = `
 .acc-wrap{position:relative}
-.acc-btn{display:flex;align-items:center;gap:10px;width:100%;border:0;background:none;padding:0;color:var(--foreground);font:inherit;text-align:start;cursor:pointer;border-radius:12px}
-.acc-btn:focus-visible{outline:2px solid var(--ring,var(--primary));outline-offset:6px}
+.acc-smoky-btn{width:100%;border-radius:18px;padding:10px}
 .acc-av{position:relative;display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:50%;overflow:hidden;font-size:14px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--primary),color-mix(in oklab,var(--primary) 50%,#fff));box-shadow:0 0 0 2px color-mix(in oklab,var(--primary) 45%,transparent),0 4px 14px color-mix(in oklab,var(--primary) 45%,transparent)}
 .acc-av img{width:100%;height:100%;object-fit:cover;display:block}
 .acc-meta{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
-.acc-name{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 6px rgba(0,0,0,.25)}
+.acc-name{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--foreground)}
+.dark .acc-name{text-shadow:0 1px 6px rgba(0,0,0,.45)}
 .acc-sub{font-size:11.5px;color:var(--muted-foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr;text-align:start}
+.dark .acc-smoky-btn .acc-sub{color:rgba(233,237,249,.78);text-shadow:0 1px 5px rgba(0,0,0,.4)}
 .acc-dots{flex:none;display:grid;place-items:center;width:30px;height:30px;border-radius:9px;color:var(--muted-foreground);transition:background .15s,color .15s,rotate .3s cubic-bezier(.3,1.5,.5,1)}
-.acc-btn:hover .acc-dots,.acc-btn[aria-expanded=true] .acc-dots{background:color-mix(in oklab,var(--foreground) 10%,transparent);color:var(--foreground)}
-.acc-btn[aria-expanded=true] .acc-dots{rotate:90deg}
+.dark .acc-smoky-btn .acc-dots{color:rgba(233,237,249,.82)}
+.acc-smoky-btn:hover .acc-dots,.acc-smoky-btn[aria-expanded=true] .acc-dots{background:color-mix(in oklab,var(--foreground) 12%,transparent);color:var(--foreground)}
+.acc-smoky-btn[aria-expanded=true] .acc-dots{rotate:90deg}
 .acc-pop{position:absolute;inset-inline:0;bottom:calc(100% + 10px);z-index:20;padding:6px;border-radius:18px;transform-origin:bottom center;contain:layout style;will-change:transform,opacity}
 .acc-head{display:flex;align-items:center;gap:10px;padding:6px 8px 8px}
 .acc-item{display:flex;align-items:center;gap:10px;width:100%;height:40px;padding:0 10px;border:0;border-radius:10px;background:none;color:var(--foreground);font:inherit;font-size:13.5px;text-align:start;text-decoration:none;cursor:pointer;transition:background .15s}
@@ -77,20 +84,60 @@ const CSS = `
 .acc-sep{height:1px;margin:6px 8px;background:var(--border)}
 `;
 
-let accStylesInjected = false;
 function ensureAccStyles() {
-  if (accStylesInjected || typeof document === "undefined") return;
-  if (!document.getElementById("acc-card-styles")) {
-    const tag = document.createElement("style");
-    tag.id = "acc-card-styles";
-    tag.textContent = CSS;
-    document.head.appendChild(tag);
+  if (typeof document === "undefined") return;
+  const existing = document.getElementById("acc-card-styles");
+  if (existing) {
+    existing.textContent = CSS;
+    return;
   }
-  accStylesInjected = true;
+  const tag = document.createElement("style");
+  tag.id = "acc-card-styles";
+  tag.textContent = CSS;
+  document.head.appendChild(tag);
+}
+
+function readSiteSmokeColors(): SmokeColors {
+  if (typeof document === "undefined") {
+    return resolveSiteSmokeColors(true, "violet");
+  }
+  const root = document.documentElement;
+  return resolveSiteSmokeColors(
+    root.classList.contains("dark"),
+    root.getAttribute("data-accent"),
+  );
+}
+
+function useSiteSmokeColors(): SmokeColors {
+  const [colors, setColors] = useState<SmokeColors>(readSiteSmokeColors);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const sync = () => {
+      const next = readSiteSmokeColors();
+      setColors((prev) =>
+        prev.primary === next.primary &&
+        prev.secondary === next.secondary &&
+        prev.shadow === next.shadow
+          ? prev
+          : next,
+      );
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-accent"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  return colors;
 }
 
 export function AccountCard({ user, items, onSignIn, className }: AccountCardProps) {
   ensureAccStyles();
+  const smokeColors = useSiteSmokeColors();
   const fa = typeof document !== "undefined" && document.documentElement.lang.startsWith("fa");
   const t = fa ? TEXT.fa : TEXT.en;
   const reduce = useReducedMotion();
@@ -104,14 +151,15 @@ export function AccountCard({ user, items, onSignIn, className }: AccountCardPro
       setOpenSubId(null);
       return;
     }
-    const away = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
+    const detachOutside = attachOutsideDismiss({
+      isInside: (target, path) =>
+        Boolean(ref.current?.contains(target) || (path && ref.current && path.includes(ref.current))),
+      onDismiss: () => setOpen(false),
+    });
     const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc);
     return () => {
-      document.removeEventListener("pointerdown", away);
+      detachOutside();
       document.removeEventListener("keydown", esc);
     };
   }, [open]);
@@ -219,30 +267,39 @@ export function AccountCard({ user, items, onSignIn, className }: AccountCardPro
         )}
       </AnimatePresence>
 
-      <GlassCard
-        radius={18}
-        rimWidth={5}
-        blur={10}
-        refraction={14}
-        padding={10}
-        tint="color-mix(in oklab,var(--primary) 20%,transparent)"
-        className="w-full"
-      >
-        <button type="button" className="acc-btn" onClick={click} aria-haspopup={guest ? undefined : "menu"} aria-expanded={guest ? undefined : open}>
-          <span className="acc-av">
-            {user?.avatarUrl && imgOk ? <img src={user.avatarUrl} alt="" referrerPolicy="no-referrer" onError={() => setImgOk(false)} /> : initial}
-          </span>
-          <span className="acc-meta">
-            <span className="acc-name">{guest ? t.guest : name}</span>
-            <span className="acc-sub">{guest ? t.signIn : user?.email}</span>
-          </span>
-          {!guest && (
-            <span className="acc-dots" aria-hidden="true">
-              <MoreHorizontal size={18} />
+      <SmokyButton
+        colors={smokeColors}
+        speed={0.95}
+        className="acc-smoky-btn"
+        onClick={click}
+        aria-haspopup={guest ? undefined : "menu"}
+        aria-expanded={guest ? undefined : open}
+        customContent={
+          <>
+            <span className="acc-av">
+              {user?.avatarUrl && imgOk ? (
+                <img
+                  src={user.avatarUrl}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={() => setImgOk(false)}
+                />
+              ) : (
+                initial
+              )}
             </span>
-          )}
-        </button>
-      </GlassCard>
+            <span className="acc-meta">
+              <span className="acc-name">{guest ? t.guest : name}</span>
+              <span className="acc-sub">{guest ? t.signIn : user?.email}</span>
+            </span>
+            {!guest && (
+              <span className="acc-dots" aria-hidden="true">
+                <MoreHorizontal size={18} />
+              </span>
+            )}
+          </>
+        }
+      />
     </div>
   );
 }

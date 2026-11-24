@@ -109,14 +109,47 @@ const MAX_DISCOVERED_MODELS = 500;
 /* -------------------------------------------------------------------------- */
 
 async function listProviders(request: Request, env: AdminEnv): Promise<Response> {
-  const providers = await sbJson<ProviderRow[]>(env, "providers?select=*&order=created_at.asc");
+  const [providers, catalogStats] = await Promise.all([
+    sbJson<ProviderRow[]>(env, "providers?select=*&order=created_at.asc"),
+    sbJson<
+      Array<{
+        provider_id: string;
+        pricing?: string | null;
+        tier: string | null;
+        site_paid?: boolean;
+        upstream_verified: boolean;
+      }>
+    >(
+      env,
+      "catalog_models?select=provider_id,pricing,tier,site_paid,upstream_verified&limit=5000",
+    ).catch(() => []),
+  ]);
+
+  const counts = new Map<string, { total: number; free: number }>();
+  for (const row of catalogStats) {
+    const entry = counts.get(row.provider_id) ?? { total: 0, free: 0 };
+    entry.total += 1;
+    const pricing = row.site_paid
+      ? "paid"
+      : row.pricing === "free" || row.pricing === "paid" || row.pricing === "unknown"
+        ? row.pricing
+        : row.tier === "free"
+          ? "free"
+          : "unknown";
+    if (row.upstream_verified && !row.site_paid && pricing === "free") {
+      entry.free += 1;
+    }
+    counts.set(row.provider_id, entry);
+  }
+
   const summaries = await Promise.all(
     providers.map(async (provider) => {
+      const stat = counts.get(provider.id) ?? { total: 0, free: 0 };
       try {
         const keys = await listProviderKeys(env, provider.id);
-        return summarizeProvider(provider, keys);
+        return { ...summarizeProvider(provider, keys), freeModelCount: stat.free, totalModelCount: stat.total };
       } catch {
-        return summarizeProvider(provider, []);
+        return { ...summarizeProvider(provider, []), freeModelCount: stat.free, totalModelCount: stat.total };
       }
     }),
   );
@@ -679,6 +712,10 @@ async function updateModel(request: Request, env: AdminEnv, modelId: string): Pr
     patch.tier = body.pricing;
     patch.site_paid = body.pricing === "paid";
   }
+  const rawWeight = body.modelWeight ?? body.model_weight;
+  if (typeof rawWeight === "number" && Number.isFinite(rawWeight) && rawWeight > 0 && rawWeight <= 100) {
+    patch.model_weight = Math.round(rawWeight * 100) / 100;
+  }
 
   let rows: CatalogRow[];
   try {
@@ -688,7 +725,7 @@ async function updateModel(request: Request, env: AdminEnv, modelId: string): Pr
       body: JSON.stringify(patch),
     });
   } catch {
-    const { site_paid: _ignored, pricing: _p, ...fallbackPatch } = patch;
+    const { site_paid: _ignored, pricing: _p, model_weight: _w, ...fallbackPatch } = patch;
     rows = await sbJson<CatalogRow[]>(env, `catalog_models?id=${eq(modelId)}`, {
       method: "PATCH",
       headers: { Prefer: "return=representation" },
@@ -948,12 +985,39 @@ async function writeSettings(request: Request, env: AdminEnv): Promise<Response>
   if (daily !== undefined) patch.default_daily_token_limit = daily;
   const monthly = intOrNull(body.defaultMonthlyTokenLimit);
   if (monthly !== undefined) patch.default_monthly_token_limit = monthly;
+  const rawSignupCredits = body.defaultSignupCredits ?? body.default_signup_credits;
+  if (typeof rawSignupCredits === "number" && Number.isFinite(rawSignupCredits) && rawSignupCredits >= 0) {
+    patch.default_signup_credits = Math.round(rawSignupCredits * 100) / 100;
+  }
+  const rawMinCredits = body.minCreditsPerRequest ?? body.min_credits_per_request;
+  if (typeof rawMinCredits === "number" && Number.isFinite(rawMinCredits) && rawMinCredits >= 0) {
+    patch.min_credits_per_request = Math.round(rawMinCredits * 100) / 100;
+  }
+  const rawMaxCredits = body.maxCreditsPerRequest ?? body.max_credits_per_request;
+  if (typeof rawMaxCredits === "number" && Number.isFinite(rawMaxCredits) && rawMaxCredits >= 0) {
+    patch.max_credits_per_request = Math.round(rawMaxCredits * 100) / 100;
+  }
 
-  const rows = await sbJson<Record<string, unknown>[]>(env, "app_settings?on_conflict=id", {
-    method: "POST",
-    headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-    body: JSON.stringify([patch]),
-  });
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await sbJson<Record<string, unknown>[]>(env, "app_settings?on_conflict=id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify([patch]),
+    });
+  } catch {
+    const {
+      default_signup_credits: _s,
+      min_credits_per_request: _min,
+      max_credits_per_request: _max,
+      ...legacyPatch
+    } = patch;
+    rows = await sbJson<Record<string, unknown>[]>(env, "app_settings?on_conflict=id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify([legacyPatch]),
+    });
+  }
   return json(request, env, { settings: rows[0] ?? (await getSettings(env)) });
 }
 

@@ -80,14 +80,15 @@ void main(){
 }`;
 
 const PRESENT = 2.4;
-const TIME_SCALE = 1.85;
+const TIME_SCALE = 4.6;
 const LOGO_SCALE = 0.62;
 const FINAL_SCALE = 0.85;
 const START_ZOOM = 2.3;
 const GLIDE = 2.3;
 const TILE = 340;
-const HOLD_AFTER = 120;
-const FADE_MS = 380;
+const HOLD_AFTER = 0;
+const FADE_MS = 180;
+const MAX_INTRO_MS = 850;
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -287,12 +288,23 @@ export function GlassIntro({ ready, onFinish }: Props) {
           holdAndFinish();
         }
       };
+      let triedPng = false;
       image.onerror = () => {
+        if (!triedPng) {
+          triedPng = true;
+          image.src = "/brand/openharness-mark.png";
+          return;
+        }
         canvas.style.display = "none";
         if (fallbackRef.current) fallbackRef.current.style.display = "block";
         holdAndFinish();
       };
-      image.src = "/brand/openharness-mark.png";
+      image.src = "/brand/openharness-mark.webp";
+
+      // Never block the user for more than MAX_INTRO_MS even on slow networks/GPUs.
+      const maxCap = window.setTimeout(() => {
+        if (!stopped) skip();
+      }, MAX_INTRO_MS);
 
       if (reduce) rt = PRESENT;
 
@@ -329,6 +341,7 @@ export function GlassIntro({ ready, onFinish }: Props) {
         cancelAnimationFrame(raf);
         window.clearInterval(waitBoot);
         window.clearTimeout(scheduled);
+        window.clearTimeout(maxCap);
         window.removeEventListener("resize", resize);
         window.removeEventListener("keydown", onKey);
         if (texture) gl.deleteTexture(texture);
@@ -350,7 +363,7 @@ export function GlassIntro({ ready, onFinish }: Props) {
   return (
     <div
       className={cn(
-        "fixed inset-0 z-[200] overflow-hidden bg-[#05050a] transition-opacity duration-[380ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+        "fixed inset-0 z-[200] overflow-hidden bg-[#05050a] transition-opacity duration-[180ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
         leaving ? "pointer-events-none opacity-0" : "opacity-100",
       )}
       onClick={() => finishRef.current()}
@@ -359,7 +372,7 @@ export function GlassIntro({ ready, onFinish }: Props) {
       <canvas ref={canvasRef} className="absolute inset-0 size-full cursor-pointer" aria-label="OpenHarneks" role="img" />
       <img
         ref={fallbackRef}
-        src="/brand/openharness-mark.png"
+        src="/brand/openharness-mark.webp"
         alt=""
         aria-hidden
         draggable={false}

@@ -1,14 +1,17 @@
 // chat feature: EmptyState; change its UI/flow here and keep related state/API calls in sync.
-import { ArrowRight, Coins, KeyRound, Lock, MessageCircle, ShieldCheck } from "lucide-react";
+import { ArrowRight, Coins, KeyRound, Lock, MessageCircle, Mic, MicOff, ShieldCheck } from "lucide-react";
 import { motion, useReducedMotion } from "framer-motion";
 import * as React from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { GlassButton } from "@/components/ui/glass-button";
 import PromptComposer, { type PromptComposerModel } from "@/components/ui/prompt-composer";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { buildComposerModels, resolveComposerModelId } from "@/features/chat/modelOptions";
 import { IntelligencePicker, type ReasoningEffort } from "@/features/chat/IntelligencePicker";
 import { SkillPicker } from "@/features/chat/SkillPicker";
+import { useVoiceInput, voiceErrorI18nKey } from "@/features/chat/useVoiceInput";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth";
@@ -120,9 +123,17 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
       }
     : undefined;
 
+  const [text, setText] = React.useState("");
   const [busyFiles, setBusyFiles] = React.useState(false);
   const [pickedModelId, setPickedModelId] = React.useState("");
   const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffort>(undefined);
+
+  const voice = useVoiceInput({
+    lang,
+    value: text,
+    onChange: setText,
+    onError: (code) => toast.error(t(voiceErrorI18nKey(code))),
+  });
 
   const chat = chats.find((c) => c.id === activeChatId) ?? null;
 
@@ -206,6 +217,7 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
   };
 
   const handleSubmit = async ({ prompt, modelId }: { prompt: string; modelId: string }) => {
+    if (voice.listening) voice.stop({ commit: false });
     if (!useAuthStore.getState().signedIn) {
       setAuthGateOpen(true);
       return;
@@ -337,6 +349,47 @@ export function EmptyState({ docking = false }: { docking?: boolean }) {
                 models={modelOptions}
                 modelId={selectedModelId}
                 onModelChange={handleModelChange}
+                value={text}
+                onChange={setText}
+                leadingActions={
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <GlassButton
+                        variant="icon"
+                        active={voice.listening}
+                        onClick={voice.toggle}
+                        aria-label={voice.listening ? t("chat.voiceStop") : t("chat.voice")}
+                        aria-pressed={voice.listening}
+                        className={cn(
+                          voice.listening && "!text-[var(--destructive)]",
+                          !voice.supported && "opacity-60",
+                        )}
+                      >
+                        {voice.listening ? (
+                          <MicOff size={14} strokeWidth={1.75} aria-hidden="true" />
+                        ) : (
+                          <Mic size={14} strokeWidth={1.75} aria-hidden="true" />
+                        )}
+                        {voice.listening && (
+                          <span
+                            className="pointer-events-none absolute right-1.5 top-1.5 flex size-1.5"
+                            aria-hidden="true"
+                          >
+                            <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--destructive)] opacity-75" />
+                            <span className="relative inline-flex size-1.5 rounded-full bg-[var(--destructive)]" />
+                          </span>
+                        )}
+                      </GlassButton>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {voice.listening
+                        ? t("chat.listening")
+                        : voice.supported
+                          ? t("chat.voice")
+                          : t("chat.voiceUnsupported")}
+                    </TooltipContent>
+                  </Tooltip>
+                }
                 trailingActions={<SkillPicker value={skillMode} onChange={setSkillMode} />}
                 modelLeading={
                   reasoningCapable ? (

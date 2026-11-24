@@ -1,21 +1,41 @@
 // Shared server logic serverChat; update API callers when changing its contract.
-import { consumeCredit, getSettings, resolveAuth, type AuthEnv, type ProfileRow } from "./auth";
+import { getSettings, resolveAuth, type AppSettingsRow, type AuthEnv, type ProfileRow } from "./auth";
+import {
+  calculateTokenCredits,
+  commitCreditReservation,
+  creditsExhaustedResponse,
+  estimateReservationCredits,
+  estimateTokensFromLength,
+  extractCreditPolicy,
+  formatCreditNumber,
+  hasImagesInMessages,
+  releaseCreditReservation,
+  reserveUserCredits,
+  resolveModelWeight,
+  resolveTaskWeight,
+  type CreditReservationHandle,
+} from "./credits";
 import { decryptSecret } from "./crypto";
 import {
-  type PreviewAiJudge,
-  type PreviewIntentMessage,
-} from "./previewIntent";
-import { injectSkillSystemPrompt } from "./skills/definitions";
-import { resolveSkillExecution, skillResponseHeaders } from "./skills/router";
-import {
+  createRuntimeSkillReader,
+  injectSkillSystemPrompt,
   normalizeSkillMode,
-  type SkillEnv,
-  type SkillMessage,
+  resolveSkillExecution,
+  skillResponseHeaders,
+  tryExecuteSkillModeB,
+  type ClassifierCaller,
   type SkillMode,
-} from "./skills/types";
+  type SkillRuntimeEnv,
+} from "./skills";
 import { listProviderKeys, callWithRotation, type ApiFormat, type ProviderRow, type RotationEnv } from "./providerKeys";
 import { resolveRouterForChat, type ResolvedRouterMember } from "./routersHandler";
-import { buildUpstreamRequest, normalizeJson, normalizeStream, type ChatBody } from "./upstream";
+import {
+  buildUpstreamRequest,
+  normalizeJson,
+  pipeNormalizedStream,
+  type ChatBody,
+  type NormalizedJson,
+} from "./upstream";
 import { checkQuota, estimateMessageTokens, estimateTokens, recordUsage } from "./usage";
 import {
   defaultAuthForFormat,
@@ -38,7 +58,7 @@ const serverRouterScheduler = new RouterScheduler();
 
 export type ChatEnv = AuthEnv &
   RotationEnv &
-  SkillEnv & {
+  SkillRuntimeEnv & {
     MASTER_ENCRYPTION_KEY?: string;
   };
 
@@ -65,6 +85,7 @@ export interface InlineUserProvider {
 
 const MAX_MESSAGES = 120;
 const MAX_MESSAGE_CHARS = 32_000;
+const MAX_ELEMENT_EDIT_MESSAGE_CHARS = 64_000;
 const MAX_TOTAL_CHARS = 160_000;
 const MAX_TOKENS = 32_768;
 const ALLOWED_ROLES = new Set(["system", "user", "assistant"]);
@@ -76,6 +97,7 @@ interface CatalogJoin {
   upstream_id: string;
   capabilities: string[] | null;
   site_paid?: boolean;
+  model_weight?: number | string | null;
   providers: ProviderRow | ProviderRow[] | null;
 }
 
@@ -193,7 +215,10 @@ export function validateChatRequest(value: unknown, maxTokensCap = MAX_TOKENS): 
     if (!ALLOWED_ROLES.has(role)) return { ok: false, message: "Invalid message role." };
 
     if (typeof entry.content === "string") {
-      if (entry.content.length > MAX_MESSAGE_CHARS) return { ok: false, message: "A message is too long." };
+      const charLimit = entry.content.includes("[OPENBENI_ELEMENT_EDIT]")
+        ? MAX_ELEMENT_EDIT_MESSAGE_CHARS
+        : MAX_MESSAGE_CHARS;
+      if (entry.content.length > charLimit) return { ok: false, message: "A message is too long." };
       totalChars += entry.content.length;
       if (totalChars > MAX_TOTAL_CHARS) return { ok: false, message: "The conversation is too long." };
       clean.push({ role, content: entry.content });
@@ -279,61 +304,59 @@ interface ByokTarget {
 }
 
 /**
- * Lightweight, bounded-latency AI intent judge used when the fast heuristic
- * encounters an ambiguous prompt. Runs concurrently with the main completion
- * so it adds zero latency on clear prompts and never blocks slow upstreams.
+ * Converts a completed NormalizedJson response (e.g. from a Mode B read_skill tool loop)
+ * into an OpenAI-compatible SSE stream when the caller requested `stream: true`.
  */
-function makeDirectAiJudge(
+function normalizedJsonToSse(normalized: NormalizedJson): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const content = normalized.choices[0]?.message?.content ?? "";
+  const finishReason = normalized.choices[0]?.finish_reason ?? "stop";
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (content) {
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`),
+        );
+      }
+      controller.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({
+            choices: [{ delta: {}, finish_reason: finishReason }],
+            ...(normalized.usage ? { usage: normalized.usage } : {}),
+          })}\n\n`,
+        ),
+      );
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+}
+
+function makeDirectClassifierCaller(
   provider: ProviderRow,
   apiKey: string,
-  upstreamModelId: string,
-): PreviewAiJudge {
-  return async (promptMessages: PreviewIntentMessage[]) => {
+): ClassifierCaller {
+  return async ({ systemPrompt, transcript, model, timeoutMs }) => {
     const req = buildUpstreamRequest(
       provider,
       apiKey,
       {
-        model: upstreamModelId,
-        messages: promptMessages.map((m) => ({
-          role: m.role as "system" | "user" | "assistant",
-          content: m.content,
-        })),
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: transcript },
+        ],
         temperature: 0,
-        max_tokens: 48,
+        max_tokens: 64,
       },
       false,
     );
-    const res = await safeFetch(new URL(req.url), req.init, { timeoutMs: 2500 });
-    if (!res.ok) return null;
-    const json = await res.json().catch(() => null);
+    const res = await safeFetch(new URL(req.url), req.init, { timeoutMs });
+    if (!res.ok) throw new Error(`classifier_http_${res.status}`);
+    const json = await res.json();
     const normalized = normalizeJson(provider.api_format, json);
-    return normalized.choices[0]?.message.content ?? null;
+    return normalized.choices[0]?.message.content ?? "";
   };
-}
-
-function toSkillMessages(messages: ChatBody["messages"]): SkillMessage[] {
-  return messages.map((m) => {
-    if (typeof m.content === "string") return { role: m.role, content: m.content };
-    if (Array.isArray(m.content)) {
-      let hasImages = false;
-      const text = m.content
-        .map((part) => {
-          if (typeof part === "string") return part;
-          if (part && typeof part === "object") {
-            const p = part as { type?: unknown; text?: unknown; image_url?: unknown };
-            if (p.type === "image_url" || p.type === "image" || p.image_url) {
-              hasImages = true;
-            }
-            if (typeof p.text === "string") return p.text;
-          }
-          return "";
-        })
-        .filter(Boolean)
-        .join("\n");
-      return { role: m.role, content: text, ...(hasImages ? { hasImages: true } : {}) };
-    }
-    return { role: m.role, content: "" };
-  });
 }
 
 /**
@@ -350,15 +373,30 @@ async function executeByokChat(
   target: ByokTarget,
 ): Promise<Response> {
   const started = Date.now();
-  const skillMessages = toSkillMessages(valid.body.messages);
+  const skillReader = createRuntimeSkillReader({ env, requestUrl: request.url });
+  const hasDedicatedClassifier = Boolean(env.SKILL_CLASSIFIER_BASE_URL && env.SKILL_CLASSIFIER_API_KEY);
   const skillCtx = await resolveSkillExecution({
-    messages: skillMessages,
+    messages: valid.body.messages,
     skillMode: valid.skillMode,
     env,
-    aiJudge: makeDirectAiJudge(target.provider, target.apiKey, target.upstreamModelId),
+    requestUrl: request.url,
+    providerFormat: target.provider.api_format,
+    model: target.upstreamModelId,
+    reader: skillReader,
+    fallbackClassifierCredentials: {
+      baseUrl: target.provider.base_url,
+      apiKey: target.apiKey,
+      apiFormat: target.provider.api_format,
+      model: target.upstreamModelId,
+      authHeader: target.provider.auth_header,
+      authPrefix: target.provider.auth_prefix,
+      extraHeaders: target.provider.extra_headers,
+    },
+    ...(hasDedicatedClassifier
+      ? {}
+      : { callClassifier: makeDirectClassifierCaller(target.provider, target.apiKey) }),
   });
-  const effectiveMessages = injectSkillSystemPrompt(valid.body.messages, skillCtx.systemPrompt);
-  const effectiveBody = { ...valid.body, messages: effectiveMessages };
+
   const baseRecord = {
     user_id: userId,
     provider_id: null,
@@ -370,6 +408,55 @@ async function executeByokChat(
     billing_source: "byok" as const,
     credits_charged: 0,
   };
+
+  // Mode B (optional `read_skill` tool loop) with automatic fallback to Mode A
+  if (skillCtx.selection.mode === "tool" && skillCtx.readSkillTool) {
+    const modeB = await tryExecuteSkillModeB({
+      provider: target.provider,
+      apiKey: target.apiKey,
+      baseBody: { ...valid.body, model: target.upstreamModelId },
+      resolved: skillCtx,
+      reader: skillReader,
+      fetcher: (url, init) => safeFetch(new URL(String(url)), init ?? {}, { timeoutMs: 45_000 }),
+    });
+    if (modeB.usedMode === "tool" && modeB.normalized) {
+      const text = modeB.normalized.choices[0]?.message.content ?? "";
+      await recordUsage(env, {
+        ...baseRecord,
+        prompt_tokens: modeB.normalized.usage?.prompt_tokens ?? valid.promptEstimate,
+        completion_tokens: modeB.normalized.usage?.completion_tokens ?? estimateTokens(text),
+        status: text ? "ok" : "empty",
+        latency_ms: Date.now() - started,
+      });
+      const billingHeaders = {
+        "X-Billing-Source": "byok",
+        "X-Credits-Charged": "0",
+        ...skillResponseHeaders(skillCtx, "tool"),
+      };
+      if (valid.stream) {
+        return new Response(normalizedJsonToSse(modeB.normalized), {
+          status: 200,
+          headers: apiHeaders(request, env, {
+            ...billingHeaders,
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+          }),
+        });
+      }
+      return new Response(JSON.stringify(modeB.normalized), {
+        status: 200,
+        headers: apiHeaders(request, env, {
+          ...billingHeaders,
+          "Content-Type": "application/json; charset=utf-8",
+        }),
+      });
+    }
+  }
+
+  // Mode A (default direct system-prompt injection, and automatic fallback from Mode B)
+  const effectiveMessages = injectSkillSystemPrompt(valid.body.messages, skillCtx.modeASystemPrompt);
+  const effectiveBody = { ...valid.body, messages: effectiveMessages };
 
   let upstreamReq: { url: string; init: RequestInit };
   try {
@@ -432,21 +519,19 @@ async function executeByokChat(
   const billingHeaders = {
     "X-Billing-Source": "byok",
     "X-Credits-Charged": "0",
-    ...skillResponseHeaders(skillCtx),
+    ...skillResponseHeaders(skillCtx, "direct"),
   };
 
   if (valid.stream && contentType.includes("event-stream") && upstream.body) {
-    const stream = upstream.body.pipeThrough(
-      normalizeStream(target.provider.api_format, upstream.body, async (stats) => {
-        await recordUsage(env, {
-          ...baseRecord,
-          prompt_tokens: stats.promptTokens ?? valid.promptEstimate,
-          completion_tokens: stats.completionTokens ?? estimateTokens("x".repeat(Math.max(0, stats.textChars))),
-          status: stats.streamError ? "error" : "ok",
-          latency_ms: Date.now() - started,
-        });
-      }),
-    );
+    const stream = pipeNormalizedStream(target.provider.api_format, upstream.body, async (stats) => {
+      await recordUsage(env, {
+        ...baseRecord,
+        prompt_tokens: stats.promptTokens ?? valid.promptEstimate,
+        completion_tokens: stats.completionTokens ?? estimateTokensFromLength(stats.textChars),
+        status: stats.streamError ? "error" : stats.interrupted ? "aborted" : "ok",
+        latency_ms: Date.now() - started,
+      });
+    });
     return new Response(stream, {
       status: 200,
       headers: apiHeaders(request, env, {
@@ -513,25 +598,25 @@ async function executeRouterChat(
   }
 
   const billingSource: BillingSource = resolved.billingSource;
+  let routerPolicy = extractCreditPolicy(null);
 
   // Enforce the exact same credit and usage-limit rules as regular models.
   if (billingSource === "site") {
-    if (shouldChargeCredits(billingSource) && typeof profile.credits === "number" && profile.credits <= 0) {
-      return jsonError(
-        request,
-        env,
-        402,
-        "You have used all your credits. Contact the administrator or add more credits to continue.",
-        "credits_exhausted",
-      );
-    }
-    const settings = await getSettings(env).catch(() => ({
+    const settings = await getSettings(env).catch((): AppSettingsRow => ({
       id: true,
       signup_open: true,
       default_daily_token_limit: null,
       default_monthly_token_limit: null,
       updated_at: new Date().toISOString(),
     }));
+    routerPolicy = extractCreditPolicy(settings);
+    if (
+      shouldChargeCredits(billingSource) &&
+      typeof profile.credits === "number" &&
+      profile.credits < routerPolicy.minCreditsPerRequest
+    ) {
+      return creditsExhaustedResponse(request, env, profile.credits);
+    }
     const quota = await checkQuota(env, profile, settings);
     if (!quota.allowed && quota.reason) {
       const info = quotaMessage(quota.reason);
@@ -540,15 +625,87 @@ async function executeRouterChat(
   }
 
   const started = Date.now();
-  const skillMessages = toSkillMessages(valid.body.messages);
+  const skillReader = createRuntimeSkillReader({ env, requestUrl: request.url });
+  const firstMember = resolved.members[0];
+  let routerClassifierCaller: ClassifierCaller | undefined;
+  if (!(env.SKILL_CLASSIFIER_BASE_URL && env.SKILL_CLASSIFIER_API_KEY) && firstMember) {
+    if (firstMember.billingSource === "site" && firstMember.providerRow) {
+      const p = firstMember.providerRow;
+      routerClassifierCaller = async ({ systemPrompt, transcript, model }) => {
+        const keys = await listProviderKeys(env, p.id).catch(() => []);
+        const outcome = await callWithRotation(env, p, keys, (apiKey) =>
+          Promise.resolve(
+            buildUpstreamRequest(
+              p,
+              apiKey,
+              {
+                model: env.SKILL_CLASSIFIER_MODEL || firstMember.upstreamId || model,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: transcript },
+                ],
+                temperature: 0,
+                max_tokens: 64,
+              },
+              false,
+            ),
+          ),
+        );
+        if (!outcome.response) throw new Error("router_classifier_failed");
+        const json = await outcome.response.json();
+        return normalizeJson(p.api_format, json).choices[0]?.message.content ?? "";
+      };
+    } else if (firstMember.billingSource === "byok" && firstMember.userProviderRow) {
+      const p = userProviderToProviderRow(firstMember.userProviderRow);
+      const dec = await decryptUserProviderKey(env, firstMember.userProviderRow.api_key_ciphertext);
+      if (dec.ok) {
+        routerClassifierCaller = makeDirectClassifierCaller(p, dec.apiKey);
+      }
+    }
+  }
+
   const skillCtx = await resolveSkillExecution({
-    messages: skillMessages,
+    messages: valid.body.messages,
     skillMode: valid.skillMode,
     env,
+    requestUrl: request.url,
+    providerFormat:
+      firstMember?.providerRow?.api_format ??
+      firstMember?.userProviderRow?.api_format ??
+      "openai",
+    model: firstMember?.upstreamId ?? valid.body.model,
+    reader: skillReader,
+    callClassifier: routerClassifierCaller,
   });
-  const effectiveMessages = injectSkillSystemPrompt(valid.body.messages, skillCtx.systemPrompt);
+  const effectiveMessages = injectSkillSystemPrompt(valid.body.messages, skillCtx.modeASystemPrompt);
   const effectiveBody = { ...valid.body, messages: effectiveMessages };
-  const previewHeaders = skillResponseHeaders(skillCtx);
+  const previewHeaders = skillResponseHeaders(skillCtx, "direct");
+  const routerTaskWeight = resolveTaskWeight(skillCtx.classification.category, {
+    hasImages: hasImagesInMessages(valid.body.messages),
+  });
+  const routerModelWeight = resolveModelWeight(null);
+
+  let routerReservation: CreditReservationHandle | null = null;
+  if (shouldChargeCredits(billingSource)) {
+    const estimatedReserve = estimateReservationCredits({
+      promptTokens: valid.promptEstimate,
+      maxTokens: valid.body.max_tokens,
+      modelWeight: routerModelWeight,
+      taskWeight: routerTaskWeight,
+      policy: routerPolicy,
+    });
+    const res = await reserveUserCredits(
+      env,
+      profile.id,
+      estimatedReserve,
+      routerPolicy.minCreditsPerRequest,
+      profile.credits,
+    );
+    if (!res.ok) {
+      return creditsExhaustedResponse(request, env, res.availableBalance);
+    }
+    routerReservation = res;
+  }
 
   type SuccessPayload = {
     response: Response;
@@ -666,7 +823,12 @@ async function executeRouterChat(
     },
   });
 
+  const isPublicAdminRouter = resolved.router.owner_user_id === null;
+
   if (!failover.ok || !failover.value) {
+    if (routerReservation) {
+      await releaseCreditReservation(env, routerReservation);
+    }
     const firstMember = resolved.members[0];
     void recordUsage(env, {
       user_id: profile.id,
@@ -685,8 +847,10 @@ async function executeRouterChat(
       request,
       env,
       failover.status ?? 503,
-      failover.error ?? "All router attempts failed. Please try again shortly.",
-      "router_failover_exhausted",
+      isPublicAdminRouter
+        ? "This OpenHarneks model is temporarily unavailable. Please try again shortly."
+        : (failover.error ?? "All router attempts failed. Please try again shortly."),
+      isPublicAdminRouter ? "model_unavailable" : "router_failover_exhausted",
     );
   }
 
@@ -701,32 +865,56 @@ async function executeRouterChat(
     prompt_tokens: valid.promptEstimate,
     billing_source: billingSource,
   };
-  const routerHeaders = {
-    "X-Router-Id": resolved.router.id,
-    "X-Router-Model": member.displayName,
-    "X-Router-Attempts": String(failover.attempts.length),
-  };
+  // Admin public routers present as native OpenHarneks models: never expose
+  // router metadata or underlying provider/model names in response headers.
+  const routerHeaders: Record<string, string> = isPublicAdminRouter
+    ? {}
+    : {
+        "X-Router-Id": resolved.router.id,
+        "X-Router-Model": member.displayName,
+        "X-Router-Attempts": String(failover.attempts.length),
+      };
 
   if (valid.stream && contentType.includes("event-stream") && upstream.body) {
-    const charge = shouldChargeCredits(billingSource) ? 1 : 0;
-    if (charge > 0) await consumeCredit(env, profile.id, charge);
-    const stream = upstream.body.pipeThrough(
-      normalizeStream(apiFormat, upstream.body, async (stats) => {
-        await recordUsage(env, {
-          ...baseRecord,
-          prompt_tokens: stats.promptTokens ?? valid.promptEstimate,
-          completion_tokens: stats.completionTokens ?? estimateTokens("x".repeat(Math.max(0, stats.textChars))),
-          credits_charged: charge,
-          status: stats.streamError ? "error" : "ok",
-          latency_ms: Date.now() - started,
-        });
-      }),
-    );
+    const stream = pipeNormalizedStream(apiFormat, upstream.body, async (stats) => {
+      const tokensIn = stats.promptTokens ?? valid.promptEstimate;
+      const tokensOut = stats.completionTokens ?? estimateTokensFromLength(stats.textChars);
+      let charged = 0;
+      if (routerReservation && shouldChargeCredits(billingSource)) {
+        if (tokensOut <= 0 && stats.textChars <= 0) {
+          await releaseCreditReservation(env, routerReservation);
+        } else {
+          const actualCredits = calculateTokenCredits({
+            tokensIn,
+            tokensOut,
+            modelWeight: routerModelWeight,
+            taskWeight: routerTaskWeight,
+            policy: routerPolicy,
+          });
+          const committed = await commitCreditReservation(env, profile.id, routerReservation, {
+            actualAmount: actualCredits,
+            reason: stats.interrupted || stats.streamError ? "chat_stream_partial" : "chat_usage",
+            modelId: member.modelId,
+            tokensIn,
+            tokensOut,
+          });
+          charged = committed.charged;
+        }
+      }
+      await recordUsage(env, {
+        ...baseRecord,
+        prompt_tokens: tokensIn,
+        completion_tokens: tokensOut,
+        credits_charged: charged,
+        status: stats.streamError ? "error" : stats.interrupted ? "aborted" : "ok",
+        latency_ms: Date.now() - started,
+      });
+    });
     return new Response(stream, {
       status: 200,
       headers: apiHeaders(request, env, {
         "X-Billing-Source": billingSource,
-        "X-Credits-Charged": String(charge),
+        "X-Credits-Charged": shouldChargeCredits(billingSource) ? "pending" : "0",
         ...routerHeaders,
         ...previewHeaders,
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -739,22 +927,51 @@ async function executeRouterChat(
   const payload = await upstream.json().catch(() => null);
   const normalized = normalizeJson(apiFormat, payload);
   const text = normalized.choices[0]?.message.content ?? "";
-  const charge = text && shouldChargeCredits(billingSource) ? 1 : 0;
-  if (charge > 0) await consumeCredit(env, profile.id, charge);
+  const tokensIn = normalized.usage?.prompt_tokens ?? valid.promptEstimate;
+  const tokensOut = normalized.usage?.completion_tokens ?? estimateTokensFromLength(text);
+  let charged = 0;
+  let remainingBalance: number | null = null;
+  if (routerReservation && shouldChargeCredits(billingSource)) {
+    if (!text && tokensOut <= 0) {
+      remainingBalance = await releaseCreditReservation(env, routerReservation);
+    } else {
+      const actualCredits = calculateTokenCredits({
+        tokensIn,
+        tokensOut,
+        modelWeight: routerModelWeight,
+        taskWeight: routerTaskWeight,
+        policy: routerPolicy,
+      });
+      const committed = await commitCreditReservation(env, profile.id, routerReservation, {
+        actualAmount: actualCredits,
+        reason: "chat_usage",
+        modelId: member.modelId,
+        tokensIn,
+        tokensOut,
+      });
+      charged = committed.charged;
+      remainingBalance = committed.balance;
+    }
+  }
   await recordUsage(env, {
     ...baseRecord,
-    prompt_tokens: normalized.usage?.prompt_tokens ?? valid.promptEstimate,
-    completion_tokens: normalized.usage?.completion_tokens ?? estimateTokens(text),
-    credits_charged: charge,
+    prompt_tokens: tokensIn,
+    completion_tokens: tokensOut,
+    credits_charged: charged,
     status: text ? "ok" : "empty",
     latency_ms: Date.now() - started,
   });
 
-  return new Response(JSON.stringify(normalized), {
+  const responsePayload = isPublicAdminRouter
+    ? { ...normalized, model: resolved.router.name }
+    : normalized;
+
+  return new Response(JSON.stringify(responsePayload), {
     status: 200,
     headers: apiHeaders(request, env, {
       "X-Billing-Source": billingSource,
-      "X-Credits-Charged": String(charge),
+      "X-Credits-Charged": formatCreditNumber(charged),
+      ...(remainingBalance !== null ? { "X-Credits-Remaining": formatCreditNumber(remainingBalance) } : {}),
       ...routerHeaders,
       ...previewHeaders,
       "Content-Type": "application/json; charset=utf-8",
@@ -885,20 +1102,27 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
   // -------------------------------------------------------------------------
   // Path 3: Default catalog model lookup (with automatic saved user-model fallback)
   // -------------------------------------------------------------------------
-  const catalogQuery = (withPaid: boolean) =>
-    `catalog_models?select=id,display_name,upstream_id,capabilities${withPaid ? ",site_paid" : ""},providers!inner(*)&id=eq.${encodeURIComponent(
+  const catalogQuery = (withPaid: boolean, withWeight: boolean) =>
+    `catalog_models?select=id,display_name,upstream_id,capabilities${withPaid ? ",site_paid" : ""}${
+      withWeight ? ",model_weight" : ""
+    },providers!inner(*)&id=eq.${encodeURIComponent(
       valid.body.model,
     )}&enabled=eq.true&upstream_verified=eq.true&providers.enabled=eq.true&limit=1`;
   const lookupCatalog = async (): Promise<CatalogJoin | null> => {
     try {
-      const rows = await sbJson<CatalogJoin[]>(env, catalogQuery(true));
+      const rows = await sbJson<CatalogJoin[]>(env, catalogQuery(true, true));
       return rows[0] ?? null;
     } catch {
       try {
-        const rows = await sbJson<CatalogJoin[]>(env, catalogQuery(false));
+        const rows = await sbJson<CatalogJoin[]>(env, catalogQuery(true, false));
         return rows[0] ?? null;
       } catch {
-        return null;
+        try {
+          const rows = await sbJson<CatalogJoin[]>(env, catalogQuery(false, false));
+          return rows[0] ?? null;
+        } catch {
+          return null;
+        }
       }
     }
   };
@@ -906,7 +1130,7 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
   // Settings and the catalog are independent: fetch them together so the
   // first token does not wait on two sequential round trips.
   const [settings, catalog] = await Promise.all([
-    getSettings(env).catch(() => ({
+    getSettings(env).catch((): AppSettingsRow => ({
       id: true,
       signup_open: true,
       default_daily_token_limit: null,
@@ -957,17 +1181,16 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
   }
 
   // -------------------------------------------------------------------------
-  // Site default model — enforce quota & credits, deduct 1 credit on success
+  // Site default model — enforce quota & atomic token-based credit reservation
   // -------------------------------------------------------------------------
   const billingSource: BillingSource = "site";
-  if (shouldChargeCredits(billingSource) && typeof auth.profile.credits === "number" && auth.profile.credits <= 0) {
-    return jsonError(
-      request,
-      env,
-      402,
-      "You have used all your credits. Contact the administrator or add more credits to continue.",
-      "credits_exhausted",
-    );
+  const creditPolicy = extractCreditPolicy(settings);
+  if (
+    shouldChargeCredits(billingSource) &&
+    typeof auth.profile.credits === "number" &&
+    auth.profile.credits < creditPolicy.minCreditsPerRequest
+  ) {
+    return creditsExhaustedResponse(request, env, auth.profile.credits);
   }
 
   if (catalog.site_paid) {
@@ -997,43 +1220,173 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
   const keys = keysResult.keys;
 
   const started = Date.now();
-  const intentJudge: PreviewAiJudge = async (promptMessages) => {
-    const judgeOutcome = await callWithRotation(
-      env,
-      provider,
-      keys,
-      (apiKey) =>
-        Promise.resolve(
-          buildUpstreamRequest(
-            provider,
-            apiKey,
-            {
-              model: catalog.upstream_id,
-              messages: promptMessages.map((m) => ({
-                role: m.role as "system" | "user" | "assistant",
-                content: m.content,
-              })),
-              temperature: 0,
-              max_tokens: 48,
-            },
-            false,
-          ),
-        ),
-    );
-    if (!judgeOutcome.response) return null;
-    const json = await judgeOutcome.response.json().catch(() => null);
-    const normalized = normalizeJson(provider.api_format, json);
-    return normalized.choices[0]?.message.content ?? null;
-  };
+  const skillReader = createRuntimeSkillReader({ env, requestUrl: request.url });
+  const hasDedicatedClassifier = Boolean(env.SKILL_CLASSIFIER_BASE_URL && env.SKILL_CLASSIFIER_API_KEY);
+  const catalogClassifierCaller: ClassifierCaller | undefined = hasDedicatedClassifier
+    ? undefined
+    : async ({ systemPrompt, transcript, model }) => {
+        const judgeOutcome = await callWithRotation(
+          env,
+          provider,
+          keys,
+          (apiKey) =>
+            Promise.resolve(
+              buildUpstreamRequest(
+                provider,
+                apiKey,
+                {
+                  model: env.SKILL_CLASSIFIER_MODEL || catalog.upstream_id || model,
+                  messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: transcript },
+                  ],
+                  temperature: 0,
+                  max_tokens: 64,
+                },
+                false,
+              ),
+            ),
+        );
+        if (!judgeOutcome.response) throw new Error("catalog_classifier_failed");
+        const json = await judgeOutcome.response.json();
+        const normalized = normalizeJson(provider.api_format, json);
+        return normalized.choices[0]?.message.content ?? "";
+      };
 
-  const skillMessages = toSkillMessages(valid.body.messages);
   const skillCtx = await resolveSkillExecution({
-    messages: skillMessages,
+    messages: valid.body.messages,
     skillMode: valid.skillMode,
     env,
-    aiJudge: intentJudge,
+    requestUrl: request.url,
+    providerFormat: provider.api_format,
+    model: catalog.upstream_id,
+    reader: skillReader,
+    callClassifier: catalogClassifierCaller,
   });
-  const effectiveMessages = injectSkillSystemPrompt(valid.body.messages, skillCtx.systemPrompt);
+
+  const modelWeight = resolveModelWeight(catalog.model_weight);
+  const taskWeight = resolveTaskWeight(skillCtx.classification.category, {
+    hasImages: hasImagesInMessages(valid.body.messages),
+  });
+  const estimatedReserve = estimateReservationCredits({
+    promptTokens: valid.promptEstimate,
+    maxTokens: valid.body.max_tokens,
+    modelWeight,
+    taskWeight,
+    policy: creditPolicy,
+  });
+
+  let reservation: CreditReservationHandle | null = null;
+  if (shouldChargeCredits(billingSource)) {
+    const reserved = await reserveUserCredits(
+      env,
+      auth.profile.id,
+      estimatedReserve,
+      creditPolicy.minCreditsPerRequest,
+      auth.profile.credits,
+    );
+    if (!reserved.ok) {
+      return creditsExhaustedResponse(request, env, reserved.availableBalance);
+    }
+    reservation = reserved;
+  }
+
+  const baseRecord = {
+    user_id: auth.profile.id,
+    provider_id: provider.id,
+    model_id: catalog.id,
+    model_name: catalog.display_name,
+    provider_name: provider.name,
+    prompt_tokens: valid.promptEstimate,
+    billing_source: billingSource,
+  };
+
+  // Mode B (optional `read_skill` tool loop) with automatic fallback to Mode A
+  if (skillCtx.selection.mode === "tool" && skillCtx.readSkillTool && keys.length > 0) {
+    const activeKeyRow = keys.find((k) => k.enabled) ?? keys[0];
+    let decryptedKey: string | null = null;
+    if (activeKeyRow) {
+      try {
+        decryptedKey = await decryptSecret(env.MASTER_ENCRYPTION_KEY ?? "", activeKeyRow.ciphertext);
+      } catch {
+        decryptedKey = null;
+      }
+    }
+    if (decryptedKey) {
+      const modeB = await tryExecuteSkillModeB({
+        provider,
+        apiKey: decryptedKey,
+        baseBody: { ...valid.body, model: catalog.upstream_id },
+        resolved: skillCtx,
+        reader: skillReader,
+        fetcher: (url, init) => safeFetch(new URL(String(url)), init ?? {}, { timeoutMs: 45_000 }),
+      });
+      if (modeB.usedMode === "tool" && modeB.normalized) {
+        const text = modeB.normalized.choices[0]?.message.content ?? "";
+        const tokensIn = modeB.normalized.usage?.prompt_tokens ?? valid.promptEstimate;
+        const tokensOut = modeB.normalized.usage?.completion_tokens ?? estimateTokensFromLength(text);
+        let charged = 0;
+        let remainingBalance: number | null = null;
+        if (reservation && shouldChargeCredits(billingSource)) {
+          if (!text && tokensOut <= 0) {
+            remainingBalance = await releaseCreditReservation(env, reservation);
+          } else {
+            const actualCredits = calculateTokenCredits({
+              tokensIn,
+              tokensOut,
+              modelWeight,
+              taskWeight,
+              policy: creditPolicy,
+            });
+            const committed = await commitCreditReservation(env, auth.profile.id, reservation, {
+              actualAmount: actualCredits,
+              reason: "chat_usage",
+              modelId: catalog.id,
+              tokensIn,
+              tokensOut,
+            });
+            charged = committed.charged;
+            remainingBalance = committed.balance;
+          }
+        }
+        await recordUsage(env, {
+          ...baseRecord,
+          prompt_tokens: tokensIn,
+          completion_tokens: tokensOut,
+          credits_charged: charged,
+          status: text ? "ok" : "empty",
+          latency_ms: Date.now() - started,
+        });
+        const hdrs = {
+          "X-Billing-Source": billingSource,
+          "X-Credits-Charged": formatCreditNumber(charged),
+          ...(remainingBalance !== null ? { "X-Credits-Remaining": formatCreditNumber(remainingBalance) } : {}),
+          ...skillResponseHeaders(skillCtx, "tool"),
+        };
+        if (valid.stream) {
+          return new Response(normalizedJsonToSse(modeB.normalized), {
+            status: 200,
+            headers: apiHeaders(request, env, {
+              ...hdrs,
+              "Content-Type": "text/event-stream; charset=utf-8",
+              "Cache-Control": "no-store",
+              "X-Accel-Buffering": "no",
+            }),
+          });
+        }
+        return new Response(JSON.stringify(modeB.normalized), {
+          status: 200,
+          headers: apiHeaders(request, env, {
+            ...hdrs,
+            "Content-Type": "application/json; charset=utf-8",
+          }),
+        });
+      }
+    }
+  }
+
+  // Mode A (default direct system-prompt injection, and automatic fallback from Mode B)
+  const effectiveMessages = injectSkillSystemPrompt(valid.body.messages, skillCtx.modeASystemPrompt);
   const effectiveBody = { ...valid.body, messages: effectiveMessages };
 
   const build = (apiKey: string) => {
@@ -1050,17 +1403,10 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
     console.warn(`[server-chat] ${line}`);
   });
 
-  const baseRecord = {
-    user_id: auth.profile.id,
-    provider_id: provider.id,
-    model_id: catalog.id,
-    model_name: catalog.display_name,
-    provider_name: provider.name,
-    prompt_tokens: valid.promptEstimate,
-    billing_source: billingSource,
-  };
-
   if (!outcome.response) {
+    if (reservation) {
+      await releaseCreditReservation(env, reservation);
+    }
     const failure = outcome.failure ?? { status: 503, message: "This model is temporarily unavailable." };
     void recordUsage(env, {
       ...baseRecord,
@@ -1074,28 +1420,48 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
 
   const upstream = outcome.response;
   const contentType = upstream.headers.get("content-type") ?? "";
-  const previewHeaders = skillResponseHeaders(skillCtx);
+  const previewHeaders = skillResponseHeaders(skillCtx, "direct");
 
   if (valid.stream && contentType.includes("event-stream") && upstream.body) {
-    const charge = shouldChargeCredits(billingSource) ? 1 : 0;
-    if (charge > 0) await consumeCredit(env, auth.profile.id, charge);
-    const stream = upstream.body.pipeThrough(
-      normalizeStream(provider.api_format, upstream.body, async (stats) => {
-        await recordUsage(env, {
-          ...baseRecord,
-          prompt_tokens: stats.promptTokens ?? valid.promptEstimate,
-          completion_tokens: stats.completionTokens ?? estimateTokens("x".repeat(Math.max(0, stats.textChars))),
-          credits_charged: charge,
-          status: stats.streamError ? "error" : "ok",
-          latency_ms: Date.now() - started,
-        });
-      }),
-    );
+    const stream = pipeNormalizedStream(provider.api_format, upstream.body, async (stats) => {
+      const tokensIn = stats.promptTokens ?? valid.promptEstimate;
+      const tokensOut = stats.completionTokens ?? estimateTokensFromLength(stats.textChars);
+      let charged = 0;
+      if (reservation && shouldChargeCredits(billingSource)) {
+        if (tokensOut <= 0 && stats.textChars <= 0) {
+          await releaseCreditReservation(env, reservation);
+        } else {
+          const actualCredits = calculateTokenCredits({
+            tokensIn,
+            tokensOut,
+            modelWeight,
+            taskWeight,
+            policy: creditPolicy,
+          });
+          const committed = await commitCreditReservation(env, auth.profile.id, reservation, {
+            actualAmount: actualCredits,
+            reason: stats.interrupted || stats.streamError ? "chat_stream_partial" : "chat_usage",
+            modelId: catalog.id,
+            tokensIn,
+            tokensOut,
+          });
+          charged = committed.charged;
+        }
+      }
+      await recordUsage(env, {
+        ...baseRecord,
+        prompt_tokens: tokensIn,
+        completion_tokens: tokensOut,
+        credits_charged: charged,
+        status: stats.streamError ? "error" : stats.interrupted ? "aborted" : "ok",
+        latency_ms: Date.now() - started,
+      });
+    });
     return new Response(stream, {
       status: 200,
       headers: apiHeaders(request, env, {
         "X-Billing-Source": billingSource,
-        "X-Credits-Charged": String(charge),
+        "X-Credits-Charged": shouldChargeCredits(billingSource) ? "pending" : "0",
         ...previewHeaders,
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-store",
@@ -1107,13 +1473,37 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
   const payload = await upstream.json().catch(() => null);
   const normalized = normalizeJson(provider.api_format, payload);
   const text = normalized.choices[0]?.message.content ?? "";
-  const charge = text && shouldChargeCredits(billingSource) ? 1 : 0;
-  if (charge > 0) await consumeCredit(env, auth.profile.id, charge);
+  const tokensIn = normalized.usage?.prompt_tokens ?? valid.promptEstimate;
+  const tokensOut = normalized.usage?.completion_tokens ?? estimateTokensFromLength(text);
+  let charged = 0;
+  let remainingBalance: number | null = null;
+  if (reservation && shouldChargeCredits(billingSource)) {
+    if (!text && tokensOut <= 0) {
+      remainingBalance = await releaseCreditReservation(env, reservation);
+    } else {
+      const actualCredits = calculateTokenCredits({
+        tokensIn,
+        tokensOut,
+        modelWeight,
+        taskWeight,
+        policy: creditPolicy,
+      });
+      const committed = await commitCreditReservation(env, auth.profile.id, reservation, {
+        actualAmount: actualCredits,
+        reason: "chat_usage",
+        modelId: catalog.id,
+        tokensIn,
+        tokensOut,
+      });
+      charged = committed.charged;
+      remainingBalance = committed.balance;
+    }
+  }
   await recordUsage(env, {
     ...baseRecord,
-    prompt_tokens: normalized.usage?.prompt_tokens ?? valid.promptEstimate,
-    completion_tokens: normalized.usage?.completion_tokens ?? estimateTokens(text),
-    credits_charged: charge,
+    prompt_tokens: tokensIn,
+    completion_tokens: tokensOut,
+    credits_charged: charged,
     status: text ? "ok" : "empty",
     latency_ms: Date.now() - started,
   });
@@ -1122,7 +1512,8 @@ export async function handleServerChat(request: Request, env: ChatEnv = {}): Pro
     status: 200,
     headers: apiHeaders(request, env, {
       "X-Billing-Source": billingSource,
-      "X-Credits-Charged": String(charge),
+      "X-Credits-Charged": formatCreditNumber(charged),
+      ...(remainingBalance !== null ? { "X-Credits-Remaining": formatCreditNumber(remainingBalance) } : {}),
       ...previewHeaders,
       "Content-Type": "application/json; charset=utf-8",
     }),

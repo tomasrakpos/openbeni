@@ -1,0 +1,1795 @@
+{
+  "version": 1,
+  "defaults": {
+    "mode": "direct",
+    "maxTokensPerRequest": 14000,
+    "maxSelectedSkills": {
+      "website": 3,
+      "game": 3,
+      "chat": 1,
+      "deep_thinking": 1,
+      "other": 1
+    },
+    "classifier": {
+      "model": "gpt-4o-mini",
+      "timeoutMs": 4500,
+      "historyMessages": 6,
+      "fallbackCategory": "chat",
+      "minConfidence": 0.45
+    }
+  },
+  "providerModes": {
+    "openai": "direct",
+    "anthropic": "direct",
+    "gemini": "direct",
+    "custom": "direct"
+  },
+  "modelModes": {},
+  "categoryPriorityNotes": {
+    "website": "taste-skill (priority 1) and impeccable (priority 2) are the core website skills and take precedence over conflicting rules from selective add-ons.",
+    "game": "Only skills matching the detected/requested game engine load alongside relevant genre/discipline skills; unrelated engines are excluded.",
+    "chat": "Loads natural-chat only.",
+    "deep_thinking": "Loads deep-thinking only.",
+    "other": "Loads natural-chat fallback unless a specific skill is matched."
+  },
+  "skills": {
+    "taste-skill": {
+      "category": "website",
+      "priority": 1,
+      "core": true,
+      "tags": [
+        "design",
+        "taste",
+        "art-direction",
+        "landing",
+        "website",
+        "ui",
+        "typography",
+        "layout"
+      ]
+    },
+    "impeccable": {
+      "category": "website",
+      "priority": 2,
+      "core": true,
+      "tags": [
+        "design",
+        "polish",
+        "audit",
+        "critique",
+        "typography",
+        "spacing",
+        "hierarchy",
+        "website",
+        "ui"
+      ]
+    },
+    "anthropic-frontend-design": {
+      "category": "website",
+      "priority": 10,
+      "tags": [
+        "frontend",
+        "visual-direction",
+        "aesthetics",
+        "website",
+        "landing",
+        "ui"
+      ]
+    },
+    "frontend-ui-standards": {
+      "category": "website",
+      "priority": 12,
+      "tags": [
+        "standards",
+        "design-system",
+        "tokens",
+        "accessibility",
+        "frontend",
+        "dashboard",
+        "app"
+      ]
+    },
+    "antigravity-ui-motion": {
+      "category": "website",
+      "priority": 15,
+      "tags": [
+        "motion",
+        "animation",
+        "micro-interaction",
+        "transitions",
+        "hover",
+        "spring"
+      ]
+    },
+    "antigravity-design-system": {
+      "category": "website",
+      "priority": 14,
+      "tags": [
+        "design-system",
+        "tokens",
+        "typography",
+        "color",
+        "invariants",
+        "components"
+      ]
+    },
+    "antigravity-frontend-ui-engineering": {
+      "category": "website",
+      "priority": 13,
+      "tags": [
+        "engineering",
+        "components",
+        "layout",
+        "state",
+        "production-ui",
+        "app"
+      ]
+    },
+    "animated-landing-workflow": {
+      "category": "website",
+      "priority": 16,
+      "tags": [
+        "landing",
+        "animated",
+        "hero",
+        "marketing",
+        "workflow"
+      ]
+    },
+    "awesome-design-systems": {
+      "category": "website",
+      "priority": 17,
+      "tags": [
+        "design-system",
+        "catalog",
+        "reference",
+        "tokens",
+        "enterprise"
+      ]
+    },
+    "emil-design-eng": {
+      "category": "website",
+      "priority": 18,
+      "tags": [
+        "design-engineering",
+        "craft",
+        "polish",
+        "ui",
+        "interaction",
+        "micro-interaction"
+      ]
+    },
+    "emil-animate": {
+      "category": "website",
+      "priority": 19,
+      "tags": [
+        "animation",
+        "motion",
+        "easing",
+        "spring",
+        "css",
+        "framer-motion"
+      ]
+    },
+    "emil-animation-performance": {
+      "category": "website",
+      "priority": 20,
+      "tags": [
+        "animation",
+        "performance",
+        "gpu",
+        "60fps",
+        "compositor",
+        "transforms"
+      ]
+    },
+    "emil-animation-vocabulary": {
+      "category": "website",
+      "priority": 21,
+      "tags": [
+        "animation",
+        "motion",
+        "vocabulary",
+        "timing",
+        "curves"
+      ]
+    },
+    "emil-choreograph": {
+      "category": "website",
+      "priority": 22,
+      "tags": [
+        "choreography",
+        "stagger",
+        "sequence",
+        "entrance",
+        "motion"
+      ]
+    },
+    "emil-gestures": {
+      "category": "website",
+      "priority": 23,
+      "tags": [
+        "gestures",
+        "drag",
+        "swipe",
+        "touch",
+        "pointer",
+        "spring"
+      ]
+    },
+    "emil-improve-animations": {
+      "category": "website",
+      "priority": 24,
+      "tags": [
+        "animation",
+        "polish",
+        "refactor",
+        "motion",
+        "review"
+      ]
+    },
+    "emil-learn-taste": {
+      "category": "website",
+      "priority": 25,
+      "tags": [
+        "taste",
+        "craft",
+        "visual",
+        "critique",
+        "design"
+      ]
+    },
+    "emil-apple-design": {
+      "category": "website",
+      "priority": 26,
+      "tags": [
+        "apple",
+        "minimal",
+        "craft",
+        "macos",
+        "ios",
+        "glass",
+        "hig"
+      ]
+    },
+    "emil-break-ui": {
+      "category": "website",
+      "priority": 27,
+      "tags": [
+        "audit",
+        "edge-cases",
+        "responsive",
+        "overflow",
+        "qa",
+        "stress-test"
+      ]
+    },
+    "emil-pick-ui-library": {
+      "category": "website",
+      "priority": 28,
+      "tags": [
+        "library",
+        "radix",
+        "base-ui",
+        "shadcn",
+        "components",
+        "react"
+      ]
+    },
+    "emil-prototype": {
+      "category": "website",
+      "priority": 29,
+      "tags": [
+        "prototype",
+        "rapid",
+        "interactive",
+        "demo"
+      ]
+    },
+    "emil-review-animations": {
+      "category": "website",
+      "priority": 30,
+      "tags": [
+        "animation",
+        "review",
+        "audit",
+        "motion"
+      ]
+    },
+    "emil-remove-animations": {
+      "category": "website",
+      "priority": 31,
+      "tags": [
+        "reduced-motion",
+        "accessibility",
+        "minimal",
+        "calm"
+      ]
+    },
+    "emil-find-animation-opportunities": {
+      "category": "website",
+      "priority": 32,
+      "tags": [
+        "animation",
+        "delight",
+        "interaction",
+        "motion"
+      ]
+    },
+    "react-fe-react": {
+      "category": "website",
+      "priority": 35,
+      "tags": [
+        "react",
+        "hooks",
+        "state",
+        "components",
+        "jsx",
+        "tsx"
+      ]
+    },
+    "react-fe-tailwind": {
+      "category": "website",
+      "priority": 36,
+      "tags": [
+        "tailwind",
+        "css",
+        "styling",
+        "responsive",
+        "dark-mode",
+        "utility"
+      ]
+    },
+    "react-fe-shadcn": {
+      "category": "website",
+      "priority": 37,
+      "tags": [
+        "shadcn",
+        "radix",
+        "components",
+        "dialog",
+        "table",
+        "form",
+        "ui"
+      ]
+    },
+    "react-fe-ui-design": {
+      "category": "website",
+      "priority": 38,
+      "tags": [
+        "ui",
+        "design",
+        "layout",
+        "cards",
+        "dashboard",
+        "hierarchy"
+      ]
+    },
+    "react-fe-web-design-guidelines": {
+      "category": "website",
+      "priority": 39,
+      "tags": [
+        "accessibility",
+        "wcag",
+        "guidelines",
+        "audit",
+        "ux",
+        "web"
+      ]
+    },
+    "react-fe-nextjs": {
+      "category": "website",
+      "priority": 40,
+      "tags": [
+        "nextjs",
+        "app-router",
+        "ssr",
+        "rsc",
+        "seo",
+        "routing"
+      ]
+    },
+    "react-fe-typescript": {
+      "category": "website",
+      "priority": 41,
+      "tags": [
+        "typescript",
+        "types",
+        "strict",
+        "generics"
+      ]
+    },
+    "react-fe-vercel-react-best-practices": {
+      "category": "website",
+      "priority": 42,
+      "tags": [
+        "react",
+        "performance",
+        "waterfall",
+        "bundle",
+        "rendering"
+      ]
+    },
+    "react-fe-vercel-composition-patterns": {
+      "category": "website",
+      "priority": 43,
+      "tags": [
+        "react",
+        "composition",
+        "compound-components",
+        "architecture"
+      ]
+    },
+    "react-fe-react-hook-form": {
+      "category": "website",
+      "priority": 44,
+      "tags": [
+        "form",
+        "validation",
+        "input",
+        "react-hook-form"
+      ]
+    },
+    "react-fe-tanstack-query": {
+      "category": "website",
+      "priority": 45,
+      "tags": [
+        "data-fetching",
+        "cache",
+        "query",
+        "api",
+        "react-query"
+      ]
+    },
+    "react-fe-feature-arch": {
+      "category": "website",
+      "priority": 46,
+      "tags": [
+        "architecture",
+        "folder-structure",
+        "modular",
+        "scalable"
+      ]
+    },
+    "react-fe-zod": {
+      "category": "website",
+      "priority": 47,
+      "tags": [
+        "zod",
+        "schema",
+        "validation",
+        "typescript"
+      ]
+    },
+    "designer-accessibility-audit": {
+      "category": "website",
+      "priority": 50,
+      "tags": [
+        "accessibility",
+        "wcag",
+        "a11y",
+        "contrast",
+        "aria"
+      ]
+    },
+    "designer-component-spec": {
+      "category": "website",
+      "priority": 51,
+      "tags": [
+        "component",
+        "spec",
+        "states",
+        "variants",
+        "ui"
+      ]
+    },
+    "designer-design-token": {
+      "category": "website",
+      "priority": 52,
+      "tags": [
+        "tokens",
+        "color",
+        "spacing",
+        "typography",
+        "design-system"
+      ]
+    },
+    "designer-theming-system": {
+      "category": "website",
+      "priority": 53,
+      "tags": [
+        "theme",
+        "dark-mode",
+        "light-mode",
+        "tokens",
+        "brand"
+      ]
+    },
+    "designer-pattern-library": {
+      "category": "website",
+      "priority": 54,
+      "tags": [
+        "patterns",
+        "components",
+        "reusable",
+        "library"
+      ]
+    },
+    "designer-motion-system": {
+      "category": "website",
+      "priority": 55,
+      "tags": [
+        "motion",
+        "animation",
+        "easing",
+        "transitions"
+      ]
+    },
+    "designer-form-design": {
+      "category": "website",
+      "priority": 56,
+      "tags": [
+        "form",
+        "checkout",
+        "signup",
+        "validation",
+        "ux"
+      ]
+    },
+    "designer-navigation-patterns": {
+      "category": "website",
+      "priority": 57,
+      "tags": [
+        "navigation",
+        "navbar",
+        "sidebar",
+        "menu",
+        "tabs"
+      ]
+    },
+    "designer-loading-states": {
+      "category": "website",
+      "priority": 58,
+      "tags": [
+        "loading",
+        "skeleton",
+        "spinner",
+        "optimistic",
+        "ux"
+      ]
+    },
+    "designer-feedback-patterns": {
+      "category": "website",
+      "priority": 59,
+      "tags": [
+        "toast",
+        "alert",
+        "empty-state",
+        "error",
+        "feedback"
+      ]
+    },
+    "designer-micro-interaction-spec": {
+      "category": "website",
+      "priority": 60,
+      "tags": [
+        "micro-interaction",
+        "hover",
+        "focus",
+        "delight"
+      ]
+    },
+    "designer-interfaces-that-feel": {
+      "category": "website",
+      "priority": 61,
+      "tags": [
+        "craft",
+        "tactile",
+        "feel",
+        "responsive",
+        "interaction"
+      ]
+    },
+    "designer-heuristic-evaluation": {
+      "category": "website",
+      "priority": 62,
+      "tags": [
+        "heuristic",
+        "usability",
+        "audit",
+        "critique"
+      ]
+    },
+    "designer-ux-writing": {
+      "category": "website",
+      "priority": 63,
+      "tags": [
+        "copy",
+        "microcopy",
+        "ux-writing",
+        "cta",
+        "labels"
+      ]
+    },
+    "threejs-fundamentals": {
+      "category": "website",
+      "priority": 70,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "webgl",
+        "scene",
+        "camera",
+        "renderer"
+      ]
+    },
+    "threejs-geometry": {
+      "category": "website",
+      "priority": 71,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "geometry",
+        "mesh",
+        "procedural"
+      ]
+    },
+    "threejs-materials": {
+      "category": "website",
+      "priority": 72,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "materials",
+        "pbr",
+        "physical",
+        "glass"
+      ]
+    },
+    "threejs-lighting": {
+      "category": "website",
+      "priority": 73,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "lighting",
+        "shadows",
+        "hdr",
+        "environment"
+      ]
+    },
+    "threejs-shaders": {
+      "category": "website",
+      "priority": 74,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "shaders",
+        "glsl",
+        "custom-shader",
+        "webgl"
+      ]
+    },
+    "threejs-textures": {
+      "category": "website",
+      "priority": 75,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "textures",
+        "canvas-texture",
+        "uv"
+      ]
+    },
+    "threejs-animation": {
+      "category": "website",
+      "priority": 76,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "animation",
+        "keyframes",
+        "skeletal",
+        "morph"
+      ]
+    },
+    "threejs-interaction": {
+      "category": "website",
+      "priority": 77,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "raycaster",
+        "controls",
+        "orbit",
+        "pointer"
+      ]
+    },
+    "threejs-loaders": {
+      "category": "website",
+      "priority": 78,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "gltf",
+        "glb",
+        "models",
+        "assets"
+      ]
+    },
+    "threejs-postprocessing": {
+      "category": "website",
+      "priority": 79,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "postprocessing",
+        "bloom",
+        "composer",
+        "effects"
+      ]
+    },
+    "threejs-performance": {
+      "category": "website",
+      "priority": 80,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "performance",
+        "instancing",
+        "lod",
+        "fps"
+      ]
+    },
+    "threejs-asset-pipeline": {
+      "category": "website",
+      "priority": 81,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "assets",
+        "draco",
+        "compression",
+        "ktx2"
+      ]
+    },
+    "threejs-react-three-fiber": {
+      "category": "website",
+      "priority": 82,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "r3f",
+        "react-three-fiber",
+        "drei",
+        "react"
+      ]
+    },
+    "img2threejs": {
+      "category": "website",
+      "priority": 85,
+      "engine": "threejs",
+      "extraCategories": [
+        "game"
+      ],
+      "tags": [
+        "threejs",
+        "3d",
+        "image-to-3d",
+        "procedural",
+        "sculpt",
+        "reference-image"
+      ]
+    },
+    "awesome-design-md": {
+      "category": "website",
+      "priority": 90,
+      "tags": [
+        "design-md",
+        "brand-style",
+        "reference",
+        "aesthetic",
+        "1win",
+        "airbnb",
+        "airtable",
+        "aljazeera",
+        "apple",
+        "binance",
+        "bmw",
+        "bmw-m",
+        "bugatti",
+        "cal",
+        "claude",
+        "clay",
+        "clickhouse",
+        "cohere",
+        "coinbase",
+        "composio",
+        "cursor",
+        "dell-1996",
+        "dji",
+        "elevenlabs",
+        "expo",
+        "ferrari",
+        "figma",
+        "framer",
+        "hashicorp",
+        "hp",
+        "ibm",
+        "intercom",
+        "jobright",
+        "kraken",
+        "lamborghini",
+        "linear.app",
+        "lovable",
+        "mastercard",
+        "mercury",
+        "meta",
+        "minimax",
+        "mintlify",
+        "miro",
+        "mistral.ai",
+        "mongodb",
+        "mydealz",
+        "nerdwallet",
+        "nike",
+        "nintendo-2001",
+        "notion",
+        "nvidia",
+        "ollama",
+        "opencode.ai",
+        "oracle",
+        "oura",
+        "pinterest",
+        "playstation",
+        "posthog",
+        "raycast",
+        "renault",
+        "replicate",
+        "resend",
+        "revolut",
+        "runwayml",
+        "sanity",
+        "sap",
+        "sentry",
+        "shopify",
+        "slack",
+        "spacex",
+        "spotify",
+        "starbucks",
+        "stripe",
+        "supabase",
+        "superhuman",
+        "tesla",
+        "theverge",
+        "together.ai",
+        "uber",
+        "vercel",
+        "vodafone",
+        "voltagent",
+        "warp",
+        "webflow",
+        "wired",
+        "wise",
+        "x.ai",
+        "zapier"
+      ]
+    },
+    "ai-behavior-trees-utility-ai": {
+      "category": "game",
+      "priority": 10,
+      "engine": "general",
+      "tags": [
+        "ai",
+        "behavior",
+        "disciplines",
+        "general",
+        "trees",
+        "utility"
+      ]
+    },
+    "audio-design": {
+      "category": "game",
+      "priority": 11,
+      "engine": "general",
+      "tags": [
+        "audio",
+        "design",
+        "disciplines",
+        "general"
+      ]
+    },
+    "camera-systems": {
+      "category": "game",
+      "priority": 12,
+      "engine": "general",
+      "tags": [
+        "camera",
+        "disciplines",
+        "general",
+        "systems"
+      ]
+    },
+    "create-game-assets": {
+      "category": "game",
+      "priority": 13,
+      "engine": "general",
+      "tags": [
+        "assets",
+        "create",
+        "disciplines",
+        "game",
+        "general"
+      ]
+    },
+    "dialogue-systems": {
+      "category": "game",
+      "priority": 14,
+      "engine": "general",
+      "tags": [
+        "dialogue",
+        "disciplines",
+        "general",
+        "systems"
+      ]
+    },
+    "game-ai": {
+      "category": "game",
+      "priority": 15,
+      "engine": "general",
+      "tags": [
+        "ai",
+        "disciplines",
+        "game",
+        "general"
+      ]
+    },
+    "game-feel": {
+      "category": "game",
+      "priority": 16,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "feel",
+        "game",
+        "general"
+      ]
+    },
+    "game-ui-ux": {
+      "category": "game",
+      "priority": 17,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "game",
+        "general",
+        "ui",
+        "ux"
+      ]
+    },
+    "input-systems": {
+      "category": "game",
+      "priority": 18,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "general",
+        "input",
+        "systems"
+      ]
+    },
+    "level-design": {
+      "category": "game",
+      "priority": 19,
+      "engine": "general",
+      "tags": [
+        "design",
+        "disciplines",
+        "general",
+        "level"
+      ]
+    },
+    "performance-optimization": {
+      "category": "game",
+      "priority": 20,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "general",
+        "optimization",
+        "performance"
+      ]
+    },
+    "physics-tuning": {
+      "category": "game",
+      "priority": 21,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "general",
+        "physics",
+        "tuning"
+      ]
+    },
+    "procedural-gen": {
+      "category": "game",
+      "priority": 22,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "gen",
+        "general",
+        "procedural"
+      ]
+    },
+    "save-systems": {
+      "category": "game",
+      "priority": 23,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "general",
+        "save",
+        "systems"
+      ]
+    },
+    "shader-programming": {
+      "category": "game",
+      "priority": 24,
+      "engine": "general",
+      "tags": [
+        "disciplines",
+        "general",
+        "programming",
+        "shader"
+      ]
+    },
+    "ebitengine-game": {
+      "category": "game",
+      "priority": 25,
+      "engine": "ebitengine",
+      "tags": [
+        "ebitengine",
+        "game"
+      ]
+    },
+    "card-game": {
+      "category": "game",
+      "priority": 26,
+      "engine": "general",
+      "tags": [
+        "card",
+        "game",
+        "general",
+        "genres"
+      ]
+    },
+    "fps-shooter": {
+      "category": "game",
+      "priority": 27,
+      "engine": "general",
+      "tags": [
+        "fps",
+        "general",
+        "genres",
+        "shooter"
+      ]
+    },
+    "platformer": {
+      "category": "game",
+      "priority": 28,
+      "engine": "general",
+      "tags": [
+        "general",
+        "genres",
+        "platformer"
+      ]
+    },
+    "puzzle": {
+      "category": "game",
+      "priority": 29,
+      "engine": "general",
+      "tags": [
+        "general",
+        "genres",
+        "puzzle"
+      ]
+    },
+    "roguelike": {
+      "category": "game",
+      "priority": 30,
+      "engine": "general",
+      "tags": [
+        "general",
+        "genres",
+        "roguelike"
+      ]
+    },
+    "rpg": {
+      "category": "game",
+      "priority": 31,
+      "engine": "general",
+      "tags": [
+        "general",
+        "genres",
+        "rpg"
+      ]
+    },
+    "survival-crafting": {
+      "category": "game",
+      "priority": 32,
+      "engine": "general",
+      "tags": [
+        "crafting",
+        "general",
+        "genres",
+        "survival"
+      ]
+    },
+    "tower-defense": {
+      "category": "game",
+      "priority": 33,
+      "engine": "general",
+      "tags": [
+        "defense",
+        "general",
+        "genres",
+        "tower"
+      ]
+    },
+    "visual-novel": {
+      "category": "game",
+      "priority": 34,
+      "engine": "general",
+      "tags": [
+        "general",
+        "genres",
+        "novel",
+        "visual"
+      ]
+    },
+    "godot-2d-movement": {
+      "category": "game",
+      "priority": 35,
+      "engine": "godot",
+      "tags": [
+        "2d",
+        "godot",
+        "movement"
+      ]
+    },
+    "godot-3d-essentials": {
+      "category": "game",
+      "priority": 36,
+      "engine": "godot",
+      "tags": [
+        "3d",
+        "essentials",
+        "godot"
+      ]
+    },
+    "godot-animation": {
+      "category": "game",
+      "priority": 37,
+      "engine": "godot",
+      "tags": [
+        "animation",
+        "godot"
+      ]
+    },
+    "godot-audio": {
+      "category": "game",
+      "priority": 38,
+      "engine": "godot",
+      "tags": [
+        "audio",
+        "godot"
+      ]
+    },
+    "godot-csharp": {
+      "category": "game",
+      "priority": 39,
+      "engine": "godot",
+      "tags": [
+        "csharp",
+        "godot"
+      ]
+    },
+    "godot-export": {
+      "category": "game",
+      "priority": 40,
+      "engine": "godot",
+      "tags": [
+        "export",
+        "godot"
+      ]
+    },
+    "godot-gdscript": {
+      "category": "game",
+      "priority": 41,
+      "engine": "godot",
+      "tags": [
+        "gdscript",
+        "godot"
+      ]
+    },
+    "godot-gdscript-headless-testing": {
+      "category": "game",
+      "priority": 42,
+      "engine": "godot",
+      "tags": [
+        "gdscript",
+        "godot",
+        "headless",
+        "testing"
+      ]
+    },
+    "godot-multiplayer": {
+      "category": "game",
+      "priority": 43,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "multiplayer"
+      ]
+    },
+    "godot-nodes-scenes": {
+      "category": "game",
+      "priority": 44,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "nodes",
+        "scenes"
+      ]
+    },
+    "godot-physics": {
+      "category": "game",
+      "priority": 45,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "physics"
+      ]
+    },
+    "godot-resources": {
+      "category": "game",
+      "priority": 46,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "resources"
+      ]
+    },
+    "godot-shaders": {
+      "category": "game",
+      "priority": 47,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "shaders"
+      ]
+    },
+    "godot-signals-groups": {
+      "category": "game",
+      "priority": 48,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "groups",
+        "signals"
+      ]
+    },
+    "godot-tilemap": {
+      "category": "game",
+      "priority": 49,
+      "engine": "godot",
+      "tags": [
+        "godot",
+        "tilemap"
+      ]
+    },
+    "godot-ui-control": {
+      "category": "game",
+      "priority": 50,
+      "engine": "godot",
+      "tags": [
+        "control",
+        "godot",
+        "ui"
+      ]
+    },
+    "bevy-ecs": {
+      "category": "game",
+      "priority": 51,
+      "engine": "bevy",
+      "tags": [
+        "bevy",
+        "ecs",
+        "other-engines"
+      ]
+    },
+    "defold-core": {
+      "category": "game",
+      "priority": 52,
+      "engine": "defold",
+      "tags": [
+        "core",
+        "defold",
+        "other-engines"
+      ]
+    },
+    "love2d-core": {
+      "category": "game",
+      "priority": 53,
+      "engine": "love2d",
+      "tags": [
+        "core",
+        "love2d",
+        "other-engines"
+      ]
+    },
+    "pygame-core": {
+      "category": "game",
+      "priority": 54,
+      "engine": "pygame",
+      "tags": [
+        "core",
+        "other-engines",
+        "pygame"
+      ]
+    },
+    "roblox-characters": {
+      "category": "game",
+      "priority": 55,
+      "engine": "roblox",
+      "tags": [
+        "characters",
+        "other-engines",
+        "roblox"
+      ]
+    },
+    "roblox-datastores": {
+      "category": "game",
+      "priority": 56,
+      "engine": "roblox",
+      "tags": [
+        "datastores",
+        "other-engines",
+        "roblox"
+      ]
+    },
+    "roblox-luau": {
+      "category": "game",
+      "priority": 57,
+      "engine": "roblox",
+      "tags": [
+        "luau",
+        "other-engines",
+        "roblox"
+      ]
+    },
+    "roblox-networking": {
+      "category": "game",
+      "priority": 58,
+      "engine": "roblox",
+      "tags": [
+        "networking",
+        "other-engines",
+        "roblox"
+      ]
+    },
+    "roblox-physics": {
+      "category": "game",
+      "priority": 59,
+      "engine": "roblox",
+      "tags": [
+        "other-engines",
+        "physics",
+        "roblox"
+      ]
+    },
+    "roblox-simulator-economy": {
+      "category": "game",
+      "priority": 60,
+      "engine": "roblox",
+      "tags": [
+        "economy",
+        "other-engines",
+        "roblox",
+        "simulator"
+      ]
+    },
+    "roblox-studio-workflow": {
+      "category": "game",
+      "priority": 61,
+      "engine": "roblox",
+      "tags": [
+        "other-engines",
+        "roblox",
+        "studio",
+        "workflow"
+      ]
+    },
+    "roblox-ui": {
+      "category": "game",
+      "priority": 62,
+      "engine": "roblox",
+      "tags": [
+        "other-engines",
+        "roblox",
+        "ui"
+      ]
+    },
+    "unity-animation": {
+      "category": "game",
+      "priority": 63,
+      "engine": "unity",
+      "tags": [
+        "animation",
+        "unity"
+      ]
+    },
+    "unity-build-pipeline": {
+      "category": "game",
+      "priority": 64,
+      "engine": "unity",
+      "tags": [
+        "build",
+        "pipeline",
+        "unity"
+      ]
+    },
+    "unity-build-size": {
+      "category": "game",
+      "priority": 65,
+      "engine": "unity",
+      "tags": [
+        "build",
+        "size",
+        "unity"
+      ]
+    },
+    "unity-csharp-scripting": {
+      "category": "game",
+      "priority": 66,
+      "engine": "unity",
+      "tags": [
+        "csharp",
+        "scripting",
+        "unity"
+      ]
+    },
+    "unity-input-system": {
+      "category": "game",
+      "priority": 67,
+      "engine": "unity",
+      "tags": [
+        "input",
+        "system",
+        "unity"
+      ]
+    },
+    "unity-navmesh": {
+      "category": "game",
+      "priority": 68,
+      "engine": "unity",
+      "tags": [
+        "navmesh",
+        "unity"
+      ]
+    },
+    "unity-physics": {
+      "category": "game",
+      "priority": 69,
+      "engine": "unity",
+      "tags": [
+        "physics",
+        "unity"
+      ]
+    },
+    "unity-scriptableobjects": {
+      "category": "game",
+      "priority": 70,
+      "engine": "unity",
+      "tags": [
+        "scriptableobjects",
+        "unity"
+      ]
+    },
+    "unity-tilemap-2d": {
+      "category": "game",
+      "priority": 71,
+      "engine": "unity",
+      "tags": [
+        "2d",
+        "tilemap",
+        "unity"
+      ]
+    },
+    "unreal-behavior-trees": {
+      "category": "game",
+      "priority": 72,
+      "engine": "unreal",
+      "tags": [
+        "behavior",
+        "trees",
+        "unreal"
+      ]
+    },
+    "unreal-blueprints": {
+      "category": "game",
+      "priority": 73,
+      "engine": "unreal",
+      "tags": [
+        "blueprints",
+        "unreal"
+      ]
+    },
+    "unreal-cpp-gameplay": {
+      "category": "game",
+      "priority": 74,
+      "engine": "unreal",
+      "tags": [
+        "cpp",
+        "gameplay",
+        "unreal"
+      ]
+    },
+    "unreal-enhanced-input": {
+      "category": "game",
+      "priority": 75,
+      "engine": "unreal",
+      "tags": [
+        "enhanced",
+        "input",
+        "unreal"
+      ]
+    },
+    "unreal-niagara": {
+      "category": "game",
+      "priority": 76,
+      "engine": "unreal",
+      "tags": [
+        "niagara",
+        "unreal"
+      ]
+    },
+    "unreal-packaging": {
+      "category": "game",
+      "priority": 77,
+      "engine": "unreal",
+      "tags": [
+        "packaging",
+        "unreal"
+      ]
+    },
+    "phaser-arcade-physics": {
+      "category": "game",
+      "priority": 78,
+      "engine": "phaser",
+      "tags": [
+        "arcade",
+        "phaser",
+        "physics",
+        "web-engines"
+      ]
+    },
+    "phaser-core": {
+      "category": "game",
+      "priority": 79,
+      "engine": "phaser",
+      "tags": [
+        "core",
+        "phaser",
+        "web-engines"
+      ]
+    },
+    "pixijs-rendering": {
+      "category": "game",
+      "priority": 80,
+      "engine": "pixijs",
+      "tags": [
+        "pixijs",
+        "rendering",
+        "web-engines"
+      ]
+    },
+    "gamedev-threejs-gltf-loading": {
+      "category": "game",
+      "priority": 81,
+      "engine": "threejs",
+      "tags": [
+        "gltf",
+        "loading",
+        "threejs",
+        "web-engines"
+      ]
+    },
+    "gamedev-threejs-materials-lighting": {
+      "category": "game",
+      "priority": 82,
+      "engine": "threejs",
+      "tags": [
+        "lighting",
+        "materials",
+        "threejs",
+        "web-engines"
+      ]
+    },
+    "gamedev-threejs-scene-setup": {
+      "category": "game",
+      "priority": 83,
+      "engine": "threejs",
+      "tags": [
+        "scene",
+        "setup",
+        "threejs",
+        "web-engines"
+      ]
+    },
+    "game-docs": {
+      "category": "game",
+      "priority": 84,
+      "engine": "general",
+      "tags": [
+        "docs",
+        "game",
+        "general",
+        "workflows"
+      ]
+    },
+    "game-jam": {
+      "category": "game",
+      "priority": 85,
+      "engine": "general",
+      "tags": [
+        "game",
+        "general",
+        "jam",
+        "workflows"
+      ]
+    },
+    "itch-publish": {
+      "category": "game",
+      "priority": 86,
+      "engine": "general",
+      "tags": [
+        "general",
+        "itch",
+        "publish",
+        "workflows"
+      ]
+    },
+    "prototype-fast": {
+      "category": "game",
+      "priority": 87,
+      "engine": "general",
+      "tags": [
+        "fast",
+        "general",
+        "prototype",
+        "workflows"
+      ]
+    },
+    "steam-publish": {
+      "category": "game",
+      "priority": 88,
+      "engine": "general",
+      "tags": [
+        "general",
+        "publish",
+        "steam",
+        "workflows"
+      ]
+    },
+    "game-engine": {
+      "category": "game",
+      "priority": 5,
+      "engine": "web",
+      "tags": [
+        "game-engine",
+        "web",
+        "canvas",
+        "html5",
+        "2d",
+        "3d",
+        "loop",
+        "physics",
+        "browser-game"
+      ]
+    },
+    "react-threejs-game": {
+      "category": "game",
+      "priority": 6,
+      "engine": "threejs",
+      "tags": [
+        "react",
+        "threejs",
+        "r3f",
+        "3d",
+        "web",
+        "game",
+        "typescript",
+        "60fps"
+      ]
+    },
+    "natural-chat": {
+      "category": "chat",
+      "priority": 1,
+      "core": true,
+      "tags": [
+        "chat",
+        "conversation",
+        "natural",
+        "general",
+        "assistant"
+      ]
+    },
+    "deep-thinking": {
+      "category": "deep_thinking",
+      "priority": 1,
+      "core": true,
+      "tags": [
+        "analysis",
+        "reasoning",
+        "first-principles",
+        "architecture",
+        "strategy",
+        "tradeoffs"
+      ]
+    }
+  }
+}

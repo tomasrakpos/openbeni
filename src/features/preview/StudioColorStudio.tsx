@@ -86,13 +86,14 @@ function parseColorString(raw: string): { h: number; s: number; v: number; a: nu
     return { h: 262, s: 0.7, v: 1, a: 0, hex: "#7c4dff" };
   }
   const rgbaMatch = clean.match(
-    /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/i,
+    /rgba?\(\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)\s*[,\s]\s*(\d+(?:\.\d+)?)(?:\s*[,/]\s*([\d.]+)(%?))?\s*\)/i,
   );
   if (rgbaMatch) {
-    const r = clamp(parseInt(rgbaMatch[1] ?? "0", 10), 0, 255);
-    const g = clamp(parseInt(rgbaMatch[2] ?? "0", 10), 0, 255);
-    const b = clamp(parseInt(rgbaMatch[3] ?? "0", 10), 0, 255);
-    const a = rgbaMatch[4] !== undefined ? clamp(parseFloat(rgbaMatch[4]), 0, 1) : 1;
+    const r = clamp(Math.round(parseFloat(rgbaMatch[1] ?? "0")), 0, 255);
+    const g = clamp(Math.round(parseFloat(rgbaMatch[2] ?? "0")), 0, 255);
+    const b = clamp(Math.round(parseFloat(rgbaMatch[3] ?? "0")), 0, 255);
+    const rawAlpha = rgbaMatch[4] !== undefined ? parseFloat(rgbaMatch[4]) : 1;
+    const a = rgbaMatch[5] === "%" ? clamp(rawAlpha / 100, 0, 1) : clamp(rawAlpha, 0, 1);
     const [h, s, v] = rgbToHsv(r, g, b);
     return { h, s, v, a, hex: rgbToHex(r, g, b) };
   }

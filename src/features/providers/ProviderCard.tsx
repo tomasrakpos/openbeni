@@ -42,7 +42,12 @@ import { effectiveTier } from "@/lib/registry";
 import { formatRelativeTime } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { prettyModelName, useProvidersStore } from "@/stores/providers";
-import { eligibleFreeModelsForLocalProvider, useRoutersStore } from "@/stores/routers";
+import {
+  eligibleFreeModelsForLocalProvider,
+  eligibleFreeModelsForLocalProviders,
+  localRouterProviderIds,
+  useRoutersStore,
+} from "@/stores/routers";
 import { useCatalogStore } from "@/stores/catalog";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
@@ -80,6 +85,7 @@ export function ProviderCard({
 }) {
   const t = useT();
   const lang = useSettingsStore((s) => s.settings.lang);
+  const allProviders = useProvidersStore((s) => s.providers);
   const models = useProvidersStore((s) => s.models);
   const pings = useProvidersStore((s) => s.pings);
   const working = useProvidersStore((s) => s.working);
@@ -118,7 +124,7 @@ export function ProviderCard({
     [provider, models],
   );
   const providerRouters = React.useMemo(
-    () => localRouters.filter((r) => r.providerId === provider.id),
+    () => localRouters.filter((r) => localRouterProviderIds(r).includes(provider.id)),
     [localRouters, provider.id],
   );
 
@@ -441,7 +447,13 @@ export function ProviderCard({
 
             {providerRouters.length > 0 && (
               <ul className="mt-2 flex flex-col gap-1">
-                {providerRouters.map((router) => (
+                {providerRouters.map((router) => {
+                  const pIds = localRouterProviderIds(router);
+                  const attached = pIds
+                    .map((pid) => allProviders.find((p) => p.id === pid))
+                    .filter((p): p is Provider => Boolean(p));
+                  const totalActive = eligibleFreeModelsForLocalProviders(attached, models).length;
+                  return (
                   <li
                     key={router.id}
                     className="flex items-center justify-between gap-2 rounded-[8px] border border-[var(--border)] bg-[var(--surface-1)] px-2.5 py-1.5 text-[11.5px]"
@@ -453,8 +465,8 @@ export function ProviderCard({
                         {t("router.badge")}
                       </Badge>
                       <span className="text-[10.5px] text-[var(--muted-foreground)]">
-                        {freeEligibleModels.length > 0
-                          ? t("router.activeCount", { n: freeEligibleModels.length })
+                        {totalActive > 0
+                          ? t("router.activeCount", { n: totalActive })
                           : t("router.disabledEmpty")}
                       </span>
                     </div>
@@ -470,7 +482,8 @@ export function ProviderCard({
                       <Trash2 className="size-3.5" />
                     </button>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </div>

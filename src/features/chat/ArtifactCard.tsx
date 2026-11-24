@@ -1,36 +1,114 @@
-// chat feature: ArtifactCard — Claude Artifacts × Lovable style in-chat build
-// activity timeline + clickable preview handoff card. Replaces raw project code
-// blocks inside the chat thread so the conversation stays human and clean.
-import { AnimatePresence, motion } from "framer-motion";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  LayoutTemplate,
-  Loader2,
-} from "lucide-react";
+// chat feature: ArtifactCard — unified in-chat build result card with collapsible
+// build steps, live 16:9 scaled preview thumbnail, and spring-jelly Preview / Code
+// action buttons. Card chrome is intentionally kept in English regardless of site
+// language so layout, metrics, and actions stay crisp and balanced.
+import { Loader2, Terminal } from "lucide-react";
 import * as React from "react";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import type { ChatArtifactSplit } from "@/lib/codefiles";
-import { useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
+import { useJellyStretch } from "@/lib/useJellyStretch";
+import type { VirtualFile } from "@/lib/types";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
 interface ArtifactCardProps {
   messageId: string;
   artifact: ChatArtifactSplit;
+  skillMode?: string | null;
 }
 
-export function ArtifactCard({ messageId, artifact }: ArtifactCardProps) {
-  const t = useT();
+const THUMB_LOCK_STYLE =
+  "<style data-oh-thumb-lock>html,body{width:1280px!important;height:720px!important;min-height:720px!important;max-width:1280px!important;max-height:720px!important;overflow:hidden!important;scrollbar-width:none!important}::-webkit-scrollbar{display:none!important}</style>";
+
+const THUMB_SANDBOX_SHIM =
+  "<script data-oh-thumb-shim>(function(){try{window.alert=window.confirm=window.prompt=function(){};}catch(_){}try{var s=window.localStorage;void s;}catch(_){try{var m={};var api={getItem:function(k){return Object.prototype.hasOwnProperty.call(m,k)?m[k]:null},setItem:function(k,v){m[k]=String(v)},removeItem:function(k){delete m[k]},clear:function(){m={}}};Object.defineProperty(window,'localStorage',{value:api,configurable:true});Object.defineProperty(window,'sessionStorage',{value:api,configurable:true});}catch(_){}}})();</script>";
+
+/**
+ * Lightweight preview HTML builder exclusively for the non-interactive 16:9 card
+ * thumbnail. Avoids importing the ~75 KB Preview Studio bridge so the initial
+ * chat bundle stays small and thumbnails never emit postMessage events or break
+ * card layout in mobile/WebKit viewports.
+ */
+export function buildCardThumbnailHtml(files: VirtualFile[]): string | null {
+  if (files.length === 0) return null;
+
+  const entry =
+    files.find((f) => f.path === "index.html") ??
+    files.find((f) => f.language === "html");
+
+  if (entry) {
+    const byPath = new Map(files.map((f) => [f.path.replace(/^\.?\//, ""), f]));
+    const lookup = (ref: string) => byPath.get(ref.replace(/^\.?\//, ""));
+
+    let html = entry.content.replace(
+      /<link\b[^>]*href=["']([^"']+)["'][^>]*>/gi,
+      (tag, href: string) => {
+        const file = lookup(href);
+        if (!file || file.language !== "css") return tag;
+        return `<style>\n${file.content}\n</style>`;
+      },
+    );
+    html = html.replace(
+      /<script\b[^>]*src=["']([^"']+)["'][^>]*>\s*<\/script>/gi,
+      (tag, src: string) => {
+        const file = lookup(src);
+        if (!file) return tag;
+        return `<script>\n${file.content}\n</script>`;
+      },
+    );
+
+    if (/<head[^>]*>/i.test(html)) {
+      html = html.replace(/<head[^>]*>/i, (m) => `${m}${THUMB_SANDBOX_SHIM}`);
+      if (/<\/head>/i.test(html)) {
+        return html.replace(/<\/head>/i, `${THUMB_LOCK_STYLE}</head>`);
+      }
+      return html.replace(/<head[^>]*>/i, (m) => `${m}${THUMB_LOCK_STYLE}`);
+    }
+    if (/<html[^>]*>/i.test(html)) {
+      return html.replace(
+        /<html[^>]*>/i,
+        (m) => `${m}<head>${THUMB_SANDBOX_SHIM}${THUMB_LOCK_STYLE}</head>`,
+      );
+    }
+    return `<!doctype html><html><head><meta charset="utf-8">${THUMB_SANDBOX_SHIM}${THUMB_LOCK_STYLE}</head><body>${html}</body></html>`;
+  }
+
+  const css = files
+    .filter((f) => f.language === "css")
+    .map((f) => f.content)
+    .join("\n");
+  const js = files
+    .filter((f) => f.language === "javascript")
+    .map((f) => f.content)
+    .join("\n");
+  if (!css && !js) return null;
+
+  return `<!doctype html><html><head><meta charset="utf-8">${THUMB_SANDBOX_SHIM}<style>${css}</style>${THUMB_LOCK_STYLE}</head><body><div id="app"></div><script>${js}</script></body></html>`;
+}
+
+function deriveProjectKind(files: VirtualFile[], skillMode?: string | null): string {
+  if (skillMode === "game") return "Game";
+  if (skillMode === "website") return "Website";
+  const hasHtml = files.some((f) => f.language === "html" || f.path.endsWith(".html"));
+  if (hasHtml) return "Website";
+  const hasApp = files.some((f) =>
+    f.language === "jsx" || f.language === "tsx" || f.language === "javascript" || f.language === "typescript",
+  );
+  if (hasApp) return "App";
+  return "Code";
+}
+
+export function ArtifactCard({ messageId, artifact, skillMode }: ArtifactCardProps) {
   const setSelectedArtifactMessageId = useUiStore((s) => s.setSelectedArtifactMessageId);
   const setRightTab = useUiStore((s) => s.setRightTab);
   const setMobilePanelOpen = useUiStore((s) => s.setMobilePanelOpen);
   const updateSettings = useSettingsStore((s) => s.update);
 
   const [stepsExpanded, setStepsExpanded] = React.useState(false);
+  const [thumbScale, setThumbScale] = React.useState(0);
+  const shotRef = React.useRef<HTMLDivElement | null>(null);
+  const previewBtnRef = useJellyStretch<HTMLButtonElement>();
+  const codeBtnRef = useJellyStretch<HTMLButtonElement>();
 
   const openWorkspace = React.useCallback(
     (tab: "preview" | "files" = "preview") => {
@@ -45,188 +123,223 @@ export function ArtifactCard({ messageId, artifact }: ArtifactCardProps) {
     [messageId, setMobilePanelOpen, setRightTab, setSelectedArtifactMessageId, updateSettings],
   );
 
-  const fileCount = artifact.files.length;
-  const fileLabel =
-    fileCount === 1
-      ? t("preview.filesCount", { n: 1 })
-      : t("preview.filesCountPlural", { n: Math.max(1, fileCount) });
-  const linesLabel = artifact.totalLines > 0 ? t("preview.linesCount", { n: artifact.totalLines }) : null;
+  // Build a stable signature for file contents so streaming trailing prose
+  // (`afterText`) never rebuilds or flickers the live thumbnail iframe.
+  const filesSignature = React.useMemo(() => {
+    if (artifact.isBuilding || artifact.files.length === 0) return "";
+    return artifact.files.map((f) => `${f.path}:${f.content.length}:${f.content.slice(-32)}`).join("|");
+  }, [artifact.files, artifact.isBuilding]);
+
+  const filesRef = React.useRef(artifact.files);
+  filesRef.current = artifact.files;
+
+  const thumbHtml = React.useMemo(() => {
+    if (!filesSignature) return null;
+    return buildCardThumbnailHtml(filesRef.current);
+  }, [filesSignature]);
+
+  // Measure the 16:9 thumbnail box from initial mount (even while building) so
+  // the exact scale factor is already ready on frame 0 when the iframe mounts.
+  React.useLayoutEffect(() => {
+    const shot = shotRef.current;
+    if (!shot) return;
+
+    const fit = () => {
+      const w = shot.getBoundingClientRect().width || shot.clientWidth;
+      if (w > 0) {
+        const nextScale = w / 1280;
+        shot.style.setProperty("--brc-scale", String(nextScale));
+        setThumbScale((prev) => (Math.abs(prev - nextScale) < 0.0005 ? prev : nextScale));
+      }
+    };
+
+    fit();
+    const raf = window.requestAnimationFrame(fit);
+    const ro = new ResizeObserver(fit);
+    ro.observe(shot);
+    window.addEventListener("resize", fit);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, []);
 
   const showStepsList = artifact.isBuilding || stepsExpanded;
+  const stepCount = artifact.steps.length;
+  const stepsSummary = artifact.isBuilding
+    ? "Building..."
+    : stepCount === 1
+      ? "1 step completed"
+      : `${stepCount} steps completed`;
+  const kindLabel = deriveProjectKind(artifact.files, skillMode);
+  const linesLabel =
+    artifact.totalLines > 0
+      ? `${artifact.totalLines.toLocaleString("en-US")} lines`
+      : null;
 
   return (
-    <div className="my-2.5 space-y-2">
-      {/* Live / collapsible build progress steps (Lovable / Claude Code pattern) */}
-      {artifact.steps.length > 0 ? (
-        <div className="overflow-hidden rounded-[13px] border border-[var(--border)] bg-[color-mix(in_oklab,var(--surface-2)_55%,transparent)]">
-          <button
-            type="button"
-            onClick={() => {
-              if (!artifact.isBuilding) setStepsExpanded((v) => !v);
-            }}
-            aria-expanded={showStepsList}
-            className={cn(
-              "flex w-full items-center gap-2 px-3 py-2 text-start text-[12px]",
-              !artifact.isBuilding && "cursor-pointer transition-colors hover:bg-[var(--surface-2)]/70",
-            )}
-          >
-            {artifact.isBuilding ? (
-              <Loader2 className="size-3.5 shrink-0 animate-spin text-[var(--accent)]" />
-            ) : (
-              <span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--success-soft)] text-[var(--success)]">
-                <Check className="size-2.5 stroke-[2.5]" />
-              </span>
-            )}
-            <span className="min-w-0 flex-1 truncate font-medium text-[var(--foreground-soft)]">
-              {artifact.isBuilding ? (
-                <TextShimmer>{t("preview.building")}</TextShimmer>
-              ) : (
-                t("preview.stepsDone", { n: artifact.steps.length })
-              )}
-            </span>
-            {artifact.isBuilding && artifact.steps.length > 0 ? (
-              <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-1)]/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-[var(--muted-foreground)]">
-                {artifact.completedSteps}/{artifact.steps.length}
-              </span>
-            ) : null}
-            {linesLabel ? (
-              <span className="shrink-0 rounded-full border border-[var(--border)] bg-[var(--surface-1)]/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-[var(--faint)]">
-                {linesLabel}
-              </span>
-            ) : null}
-            {!artifact.isBuilding ? (
-              <ChevronDown
-                className={cn(
-                  "size-3.5 shrink-0 text-[var(--faint)] transition-transform duration-200",
-                  stepsExpanded && "rotate-180",
-                )}
-              />
-            ) : null}
-          </button>
-
-          <AnimatePresence initial={false}>
-            {showStepsList ? (
-              <motion.ul
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                className="overflow-hidden border-t border-[var(--border)]/70 px-3 py-2"
-              >
-                <div className="space-y-1.5">
-                  {artifact.steps.map((step) => (
-                    <li
-                      key={step.id}
-                      className="flex items-center gap-2 text-[11.5px] leading-snug"
-                    >
-                      {step.status === "active" ? (
-                        <span className="relative flex size-3.5 shrink-0 items-center justify-center">
-                          <span className="absolute inline-flex size-2.5 animate-ping rounded-full bg-[var(--accent)]/45" />
-                          <span className="relative inline-flex size-1.5 rounded-full bg-[var(--accent)]" />
-                        </span>
-                      ) : step.status === "done" ? (
-                        <Check className="size-3.5 shrink-0 text-[var(--success)]" />
-                      ) : (
-                        <span className="flex size-3.5 shrink-0 items-center justify-center">
-                          <span className="size-2 rounded-full border border-[var(--border-strong)]" />
-                        </span>
-                      )}
-                      <span
-                        className={cn(
-                          "min-w-0 truncate transition-colors",
-                          step.status === "active"
-                            ? "font-medium text-foreground"
-                            : step.status === "done"
-                              ? "text-[var(--muted-foreground)]"
-                              : "text-[var(--faint)]",
-                        )}
-                      >
-                        {step.label}
-                      </span>
-                    </li>
-                  ))}
-                </div>
-              </motion.ul>
-            ) : null}
-          </AnimatePresence>
-        </div>
-      ) : null}
-
-      {/* Claude-style Interactive Artifact Handoff Card */}
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => openWorkspace("preview")}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            openWorkspace("preview");
-          }
-        }}
-        className={cn(
-          "group/artifact flex w-full cursor-pointer items-center gap-3 rounded-[16px] border px-3.5 py-3 text-start transition-all duration-200",
-          "border-[var(--border-strong)] bg-[color-mix(in_oklab,var(--surface-1)_76%,transparent)] backdrop-blur-md",
-          "hover:border-[color-mix(in_oklab,var(--accent)_45%,var(--border-strong))] hover:bg-[color-mix(in_oklab,var(--surface-2)_70%,transparent)]",
-          "active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)]",
-        )}
-      >
-        <span
-          className={cn(
-            "grid size-10 shrink-0 place-items-center rounded-[12px] border transition-colors",
-            artifact.isBuilding
-              ? "border-[color-mix(in_oklab,var(--accent)_35%,transparent)] bg-[color-mix(in_oklab,var(--accent)_14%,transparent)] text-[var(--accent)]"
-              : "border-[var(--border)] bg-[var(--surface-2)] text-foreground group-hover/artifact:border-[color-mix(in_oklab,var(--accent)_35%,transparent)] group-hover/artifact:text-[var(--accent)]",
-          )}
-        >
-          {artifact.isBuilding ? (
-            <Loader2 className="size-4.5 animate-spin" />
-          ) : (
-            <LayoutTemplate className="size-4.5" />
-          )}
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-[13px] font-semibold text-foreground">
-              {artifact.title}
-            </span>
-            {fileCount > 0 ? (
-              <span className="hidden shrink-0 rounded-[6px] border border-[var(--border)] bg-[var(--surface-2)]/80 px-1.5 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)] sm:inline-flex">
-                {fileLabel}
-              </span>
-            ) : null}
-          </div>
-          <p className="mt-0.5 truncate text-[11.5px] text-[var(--muted-foreground)]">
-            {artifact.isBuilding ? t("preview.building") : t("preview.ready")}
-          </p>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-1.5">
-          {artifact.isBuilding ? (
+    <div className="my-3 -ms-[42px] w-[calc(100%+42px)] sm:ms-0 sm:w-full">
+      <div dir="ltr" lang="en" className="brc mx-auto sm:mx-0">
+        {stepCount > 0 ? (
+          <>
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                openWorkspace("files");
+              className="brc-steps"
+              aria-expanded={showStepsList}
+              onClick={() => {
+                if (!artifact.isBuilding) setStepsExpanded((v) => !v);
               }}
-              aria-label={t("preview.viewCode")}
-              className="hidden h-7 items-center gap-1 rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)]/80 px-2 text-[11px] font-medium text-[var(--muted-foreground)] transition-colors hover:text-foreground sm:inline-flex"
             >
-              <Code2 className="size-3" />
-              <span>{t("preview.files")}</span>
+              <span className="brc-ok" aria-hidden="true">
+                {artifact.isBuilding ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                )}
+              </span>
+              <span className="min-w-0 truncate">
+                {artifact.isBuilding ? (
+                  <TextShimmer>{stepsSummary}</TextShimmer>
+                ) : (
+                  stepsSummary
+                )}
+              </span>
+              <span className="brc-sp" />
+              {artifact.isBuilding ? (
+                <span className="font-mono text-[11px] tabular-nums text-[var(--faint)]">
+                  {artifact.completedSteps}/{stepCount}
+                </span>
+              ) : (
+                <svg
+                  className="brc-chev"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              )}
             </button>
-          ) : null}
-          <span
-            className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-[10px] px-2.5 text-[11.5px] font-medium transition-colors",
-              artifact.isBuilding
-                ? "border border-[var(--border)] bg-[var(--surface-2)]/80 text-foreground"
-                : "bg-foreground text-background group-hover/artifact:opacity-90",
-            )}
+
+            {showStepsList ? (
+              <ul className="brc-list">
+                {artifact.steps.map((step) => (
+                  <li key={step.id} data-status={step.status} dir="auto">
+                    <span className="min-w-0 truncate">{step.label}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </>
+        ) : null}
+
+        <div
+          ref={shotRef}
+          className="brc-shot"
+          role="button"
+          tabIndex={0}
+          aria-label={`Open ${artifact.title} preview`}
+          onClick={() => openWorkspace("preview")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openWorkspace("preview");
+            }
+          }}
+        >
+          {thumbHtml && thumbScale > 0 ? (
+            <div className="brc-shot-stage" aria-hidden="true">
+              <iframe
+                srcDoc={thumbHtml}
+                title=""
+                width={1280}
+                height={720}
+                scrolling="no"
+                tabIndex={-1}
+                aria-hidden="true"
+                sandbox="allow-scripts"
+                style={{ transform: `scale(${thumbScale})` }}
+              />
+            </div>
+          ) : (
+            <div className="brc-ph" aria-hidden="true">
+              {artifact.isBuilding ? (
+                <>
+                  <Loader2 className="size-5 animate-spin" />
+                  <span className="text-[11.5px] font-medium text-[var(--muted-foreground)]">
+                    Rendering preview...
+                  </span>
+                </>
+              ) : (
+                <Terminal className="size-6 opacity-80" />
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="brc-body">
+          <h4 className="brc-title" dir="auto">
+            {artifact.title}
+          </h4>
+          <div className="brc-meta">
+            <span className="brc-kind">{kindLabel}</span>
+            {linesLabel ? <span>{linesLabel}</span> : null}
+          </div>
+        </div>
+
+        <div className="brc-act">
+          <button
+            ref={previewBtnRef}
+            type="button"
+            className="brc-gb brc-gb-primary"
+            onClick={() => openWorkspace("preview")}
           >
-            <span>{artifact.isBuilding ? t("preview.watchLive") : t("preview.openPreview")}</span>
-            <ChevronRight className="size-3.5 rtl:rotate-180" />
-          </span>
+            <span className="brc-ic" aria-hidden="true">
+              <svg
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </span>
+            <span>Preview</span>
+          </button>
+          <button
+            ref={codeBtnRef}
+            type="button"
+            className="brc-gb brc-gb-secondary"
+            onClick={() => openWorkspace("files")}
+          >
+            <span className="brc-ic" aria-hidden="true">
+              <Terminal className="size-[17px]" strokeWidth={2} />
+            </span>
+            <span>Code</span>
+          </button>
         </div>
       </div>
     </div>

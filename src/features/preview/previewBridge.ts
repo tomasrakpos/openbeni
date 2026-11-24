@@ -15,6 +15,7 @@ export type CursorKind = "auto" | "pointer" | "grab";
 export type DirKind = "auto" | "ltr" | "rtl";
 export type JustifyKind = "flex-start" | "center" | "flex-end" | "space-between";
 export type AlignItemsKind = "stretch" | "flex-start" | "center" | "flex-end";
+export type ObjectFitKind = "cover" | "contain" | "fill";
 export type CodeInjectMode = "replace" | "inside" | "css" | "js";
 
 export interface ElementRect {
@@ -79,6 +80,7 @@ export interface ElementStylesSnapshot {
   grayscalePct: number;
   hidden: boolean;
   hasParent: boolean;
+  objectFit: ObjectFitKind;
 }
 
 export interface SelectedElementInfo {
@@ -90,6 +92,10 @@ export interface SelectedElementInfo {
   selector: string;
   text: string;
   hasEditableText: boolean;
+  imgSrc?: string;
+  imgAlt?: string;
+  href?: string;
+  targetBlank?: boolean;
   outerHtml: string;
   rect: ElementRect;
   styles: ElementStylesSnapshot;
@@ -97,6 +103,11 @@ export interface SelectedElementInfo {
 
 export interface ElementStylePatch {
   text?: string;
+  imgSrc?: string;
+  imgAlt?: string;
+  objectFit?: ObjectFitKind;
+  href?: string;
+  targetBlank?: boolean;
   align?: "left" | "center" | "right";
   dir?: DirKind;
   displayMode?: DisplayModeKind;
@@ -159,6 +170,9 @@ export interface CropRect {
 
 export type StudioFromIframeMessage =
   | { __ohStudio: true; type: "element-selected"; mode: "ai-pick" | "manual-edit"; info: SelectedElementInfo }
+  | { __ohStudio: true; type: "element-synced"; info: SelectedElementInfo }
+  | { __ohStudio: true; type: "selection-cleared" }
+  | { __ohStudio: true; type: "history-state"; canUndo: boolean; canRedo: boolean; dirty: boolean }
   | { __ohStudio: true; type: "element-rect"; rect: ElementRect }
   | { __ohStudio: true; type: "element-deleted" }
   | { __ohStudio: true; type: "element-duplicated" }
@@ -171,6 +185,7 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
 (function(){
   if (window.__ohStudioBridge) return;
   window.__ohStudioBridge = true;
+  window.__ohStudioMode = "off";
 
   var mode = "off";
   var hoveredEl = null;
@@ -179,10 +194,21 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
   var selectionSeq = 0;
   var customRuleSeq = 0;
   var rectRaf = 0;
+  var inlineEditingEl = null;
+  var inlineEditBeforeText = "";
+  var resizeObs = null;
+
+  var MAX_HISTORY = 40;
+  var undoStack = [];
+  var redoStack = [];
+  var historyVersion = 0;
+  var savedHistoryVersion = 0;
+  var patchUndoTimer = 0;
 
   var hoverBox = null;
   var hoverTag = null;
   var selectBox = null;
+  var selectTag = null;
 
   var SHADOW_MAP = {
     none: "none",
@@ -251,6 +277,8 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         "box-shadow:0 4px 12px rgba(37,99,235,0.35)"
       ].join(";");
       hoverBox.appendChild(hoverTag);
+    }
+    if (hoverBox && !document.body.contains(hoverBox)) {
       document.body.appendChild(hoverBox);
     }
     if (!selectBox) {
@@ -271,6 +299,26 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         "display:none",
         "will-change:transform,width,height"
       ].join(";");
+      selectTag = document.createElement("div");
+      selectTag.setAttribute("data-oh-studio-ui", "1");
+      selectTag.style.cssText = [
+        "position:absolute",
+        "left:-2px",
+        "top:-22px",
+        "padding:2px 7px",
+        "border-radius:6px",
+        "background:#1d4ed8",
+        "color:#fff",
+        "font:600 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace",
+        "white-space:nowrap",
+        "max-width:260px",
+        "overflow:hidden",
+        "text-overflow:ellipsis",
+        "box-shadow:0 4px 12px rgba(29,78,216,0.35)"
+      ].join(";");
+      selectBox.appendChild(selectTag);
+    }
+    if (selectBox && !document.body.contains(selectBox)) {
       document.body.appendChild(selectBox);
     }
   }
@@ -294,6 +342,214 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
       tagNode.textContent = tagText || "";
       tagNode.style.top = rect.top < 26 ? (rect.height + 4) + "px" : "-22px";
     }
+  }
+
+  function syncSelectOverlay() {
+    if (!selectedEl || !document.contains(selectedEl)) {
+      if (selectBox) selectBox.style.display = "none";
+      return;
+    }
+    ensureOverlays();
+    var r = selectedEl.getBoundingClientRect();
+    var editing = inlineEditingEl === selectedEl;
+    if (selectBox) {
+      selectBox.style.borderColor = editing ? "#10b981" : "#2563eb";
+      selectBox.style.background = editing ? "rgba(16,185,129,0.06)" : "rgba(59,130,246,0.07)";
+      selectBox.style.boxShadow = editing
+        ? "0 0 0 3px rgba(16,185,129,0.24)"
+        : "0 0 0 3px rgba(59,130,246,0.20)";
+    }
+    if (selectTag) {
+      selectTag.style.background = editing ? "#059669" : "#1d4ed8";
+    }
+    var dims = Math.round(r.width) + "×" + Math.round(r.height);
+    var label = editing
+      ? describeElement(selectedEl) + " · editing"
+      : describeElement(selectedEl) + " · " + dims;
+    positionBox(selectBox, r, selectTag, label);
+  }
+
+  function observeSelectedEl(el) {
+    if (resizeObs) {
+      try { resizeObs.disconnect(); } catch (_) {}
+      resizeObs = null;
+    }
+    if (!el || typeof window.ResizeObserver !== "function") return;
+    try {
+      resizeObs = new window.ResizeObserver(function() {
+        scheduleRectSync();
+      });
+      resizeObs.observe(el);
+    } catch (_) {}
+  }
+
+  function captureHistoryState() {
+    if (!document.body) return null;
+    var bodyClone = document.body.cloneNode(true);
+    var uiNodes = bodyClone.querySelectorAll("[data-oh-studio-ui]");
+    for (var i = 0; i < uiNodes.length; i++) {
+      uiNodes[i].parentNode && uiNodes[i].parentNode.removeChild(uiNodes[i]);
+    }
+    var inlineNodes = bodyClone.querySelectorAll("[data-oh-inline-edit]");
+    for (var j = 0; j < inlineNodes.length; j++) {
+      inlineNodes[j].removeAttribute("contenteditable");
+      inlineNodes[j].removeAttribute("data-oh-inline-edit");
+    }
+    var cssStyles = [];
+    var styleEls = document.querySelectorAll('style[data-oh-custom-css="1"]');
+    for (var s = 0; s < styleEls.length; s++) {
+      cssStyles.push(styleEls[s].textContent || "");
+    }
+    return {
+      bodyHtml: bodyClone.innerHTML,
+      customCss: cssStyles,
+      version: historyVersion
+    };
+  }
+
+  function notifyHistory() {
+    window.parent.postMessage({
+      __ohStudio: true,
+      type: "history-state",
+      canUndo: undoStack.length > 0,
+      canRedo: redoStack.length > 0,
+      dirty: historyVersion !== savedHistoryVersion
+    }, "*");
+  }
+
+  function pushUndoSnapshot() {
+    if (patchUndoTimer) {
+      window.clearTimeout(patchUndoTimer);
+      patchUndoTimer = 0;
+    }
+    var snap = captureHistoryState();
+    if (!snap) return;
+    undoStack.push(snap);
+    if (undoStack.length > MAX_HISTORY) undoStack.shift();
+    redoStack = [];
+    historyVersion += 1;
+    notifyHistory();
+  }
+
+  function markPatchUndoBoundary() {
+    if (!patchUndoTimer) {
+      var snap = captureHistoryState();
+      if (snap) {
+        undoStack.push(snap);
+        if (undoStack.length > MAX_HISTORY) undoStack.shift();
+        redoStack = [];
+        historyVersion += 1;
+        notifyHistory();
+      }
+    } else {
+      window.clearTimeout(patchUndoTimer);
+    }
+    patchUndoTimer = window.setTimeout(function() {
+      patchUndoTimer = 0;
+    }, 450);
+  }
+
+  function restoreHistoryState(entry) {
+    if (!entry || !document.body) return;
+    finishInlineEdit(false);
+    if (patchUndoTimer) {
+      window.clearTimeout(patchUndoTimer);
+      patchUndoTimer = 0;
+    }
+    var oldStyles = document.querySelectorAll('style[data-oh-custom-css="1"]');
+    for (var i = 0; i < oldStyles.length; i++) {
+      oldStyles[i].parentNode && oldStyles[i].parentNode.removeChild(oldStyles[i]);
+    }
+    document.body.innerHTML = entry.bodyHtml;
+    var headTarget = document.head || document.body;
+    for (var j = 0; j < entry.customCss.length; j++) {
+      var st = document.createElement("style");
+      st.setAttribute("data-oh-custom-css", "1");
+      st.textContent = entry.customCss[j];
+      headTarget.appendChild(st);
+    }
+    ensureOverlays();
+    historyVersion = entry.version;
+    var restoredSel = document.querySelector('[data-oh-sel="1"]');
+    if (restoredSel && restoredSel !== document.body && restoredSel !== document.documentElement) {
+      selectedEl = restoredSel;
+      originalSnapshot = snapshotElement(selectedEl);
+      observeSelectedEl(selectedEl);
+      selectionSeq += 1;
+      syncSelectOverlay();
+      window.parent.postMessage({
+        __ohStudio: true,
+        type: "element-selected",
+        mode: mode === "ai-pick" ? "ai-pick" : "manual-edit",
+        info: buildElementInfo(selectedEl, "sel-" + selectionSeq)
+      }, "*");
+    } else {
+      selectedEl = null;
+      originalSnapshot = null;
+      observeSelectedEl(null);
+      if (selectBox) selectBox.style.display = "none";
+      window.parent.postMessage({ __ohStudio: true, type: "selection-cleared" }, "*");
+    }
+    notifyHistory();
+  }
+
+  function performUndo() {
+    if (undoStack.length === 0) return false;
+    var current = captureHistoryState();
+    var prev = undoStack.pop();
+    if (current) {
+      redoStack.push(current);
+      if (redoStack.length > MAX_HISTORY) redoStack.shift();
+    }
+    restoreHistoryState(prev);
+    return true;
+  }
+
+  function performRedo() {
+    if (redoStack.length === 0) return false;
+    var current = captureHistoryState();
+    var next = redoStack.pop();
+    if (current) {
+      undoStack.push(current);
+      if (undoStack.length > MAX_HISTORY) undoStack.shift();
+    }
+    restoreHistoryState(next);
+    return true;
+  }
+
+  function finishInlineEdit(commit) {
+    if (!inlineEditingEl) return;
+    var el = inlineEditingEl;
+    inlineEditingEl = null;
+    el.removeAttribute("contenteditable");
+    el.removeAttribute("data-oh-inline-edit");
+    if (!commit) {
+      setDirectText(el, inlineEditBeforeText);
+    }
+    syncSelectOverlay();
+    if (selectedEl === el && document.contains(el)) {
+      window.parent.postMessage({
+        __ohStudio: true,
+        type: "element-synced",
+        info: buildElementInfo(el, "sel-" + selectionSeq)
+      }, "*");
+    }
+  }
+
+  function startInlineEdit(el) {
+    if (!el || mode !== "manual-edit") return;
+    var tag = el.tagName.toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "img" || tag === "svg" || tag === "canvas" || tag === "hr" || tag === "br") return;
+    var txt = getDirectText(el);
+    if (!txt.editable) return;
+    if (inlineEditingEl && inlineEditingEl !== el) finishInlineEdit(true);
+    pushUndoSnapshot();
+    inlineEditBeforeText = txt.text;
+    inlineEditingEl = el;
+    el.setAttribute("contenteditable", "true");
+    el.setAttribute("data-oh-inline-edit", "1");
+    try { el.focus(); } catch (_) {}
+    syncSelectOverlay();
   }
 
   function describeElement(el) {
@@ -338,15 +594,19 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     if (!colorStr || colorStr === "transparent" || colorStr === "rgba(0, 0, 0, 0)") {
       return { hex: "#7c4dff", css: "transparent", transparent: true };
     }
-    var m = colorStr.match(/rgba?\\((\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([\\d.]+))?\\)/i);
+    var m = colorStr.match(/rgba?\\(\\s*(\\d+(?:\\.\\d+)?)\\s*[,\\s]\\s*(\\d+(?:\\.\\d+)?)\\s*[,\\s]\\s*(\\d+(?:\\.\\d+)?)(?:\\s*[,/]\\s*([\\d.]+)(%?))?\\s*\\)/i);
     if (!m) return { hex: "#ffffff", css: colorStr, transparent: false };
-    var a = m[4] !== undefined ? parseFloat(m[4]) : 1;
-    var hex = "#" + [m[1], m[2], m[3]].map(function(n){
-      var h = Math.max(0, Math.min(255, parseInt(n, 10))).toString(16);
+    var rawA = m[4] !== undefined ? parseFloat(m[4]) : 1;
+    var a = m[5] === "%" ? rawA / 100 : rawA;
+    var rN = Math.max(0, Math.min(255, Math.round(parseFloat(m[1]))));
+    var gN = Math.max(0, Math.min(255, Math.round(parseFloat(m[2]))));
+    var bN = Math.max(0, Math.min(255, Math.round(parseFloat(m[3]))));
+    var hex = "#" + [rN, gN, bN].map(function(n){
+      var h = n.toString(16);
       return h.length === 1 ? "0" + h : h;
     }).join("");
     if (a < 0.02) return { hex: hex, css: "transparent", transparent: true };
-    if (a < 0.99) return { hex: hex, css: "rgba(" + m[1] + "," + m[2] + "," + m[3] + "," + a.toFixed(2) + ")", transparent: false };
+    if (a < 0.99) return { hex: hex, css: "rgba(" + rN + "," + gN + "," + bN + "," + a.toFixed(2) + ")", transparent: false };
     return { hex: hex, css: hex, transparent: false };
   }
 
@@ -377,7 +637,12 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
 
   function setDirectText(el, nextText) {
     var tag = el.tagName.toLowerCase();
-    if (tag === "input" || tag === "textarea") {
+    if (tag === "textarea") {
+      el.value = nextText;
+      el.textContent = nextText;
+      return;
+    }
+    if (tag === "input") {
       el.value = nextText;
       el.setAttribute("value", nextText);
       return;
@@ -549,16 +814,26 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     var jc = cs.justifyContent === "center" || cs.justifyContent === "flex-end" || cs.justifyContent === "space-between" ? cs.justifyContent : "flex-start";
     var ai = cs.alignItems === "center" || cs.alignItems === "flex-start" || cs.alignItems === "flex-end" ? cs.alignItems : "stretch";
     var hasParent = Boolean(el.parentElement && el.parentElement !== document.body && el.parentElement !== document.documentElement);
+    var tagLower = el.tagName.toLowerCase();
+    var opRaw = parseFloat(cs.opacity);
+    var opPct = Math.round((isFinite(opRaw) ? Math.max(0, Math.min(1, opRaw)) : 1) * 100);
+    var gaRaw = el.dataset.ohGa !== undefined ? parseFloat(el.dataset.ohGa) : 135;
+    var gradAngle = isFinite(gaRaw) ? gaRaw : 135;
+    var objFit = cs.objectFit === "contain" || cs.objectFit === "fill" ? cs.objectFit : "cover";
 
     return {
       selectionKey: key,
-      tag: el.tagName.toLowerCase(),
+      tag: tagLower,
       id: el.id || "",
       classes: classes,
       label: describeElement(el),
       selector: buildSelector(el),
       text: txt.text,
       hasEditableText: txt.editable,
+      imgSrc: tagLower === "img" ? (el.getAttribute("src") || "") : undefined,
+      imgAlt: tagLower === "img" ? (el.getAttribute("alt") || "") : undefined,
+      href: tagLower === "a" ? (el.getAttribute("href") || "") : undefined,
+      targetBlank: tagLower === "a" ? el.getAttribute("target") === "_blank" : undefined,
       outerHtml: rawHtml,
       rect: {
         left: Math.round(r.left),
@@ -575,7 +850,7 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         backgroundColor: bg.transparent ? "#7c4dff" : bg.css,
         gradientFrom: el.dataset.ohGf || "#9b72ff",
         gradientTo: el.dataset.ohGt || "#7c4dff",
-        gradientAngle: parseFloat(el.dataset.ohGa || "135") || 135,
+        gradientAngle: gradAngle,
         color: fg.transparent ? "#ffffff" : fg.css,
         align: detectAlign(el, cs),
         dir: dirVal,
@@ -605,7 +880,7 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         marginBottom: Math.round(parseFloat(cs.marginBottom) || 0),
         marginLeft: Math.round(parseFloat(cs.marginLeft) || 0),
         marginRight: Math.round(parseFloat(cs.marginRight) || 0),
-        opacityPct: Math.round((parseFloat(cs.opacity) || 1) * 100),
+        opacityPct: opPct,
         offsetX: tf.offsetX,
         offsetY: tf.offsetY,
         rotateDeg: tf.rotateDeg,
@@ -620,7 +895,8 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         hueRotateDeg: flt.hueRotateDeg,
         grayscalePct: flt.grayscalePct,
         hidden: cs.visibility === "hidden" || el.dataset.ohHidden === "1",
-        hasParent: hasParent
+        hasParent: hasParent,
+        objectFit: objFit
       }
     };
   }
@@ -638,6 +914,10 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     return {
       styleAttr: el.getAttribute("style"),
       dirAttr: el.getAttribute("dir"),
+      srcAttr: el.getAttribute("src"),
+      altAttr: el.getAttribute("alt"),
+      hrefAttr: el.getAttribute("href"),
+      targetAttr: el.getAttribute("target"),
       innerHTML: el.innerHTML,
       value: "value" in el ? el.value : undefined,
       ds: ds
@@ -650,12 +930,34 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     }
   }
 
-  function applyPatch(patch) {
+  function applyPatch(patch, skipUndo) {
     if (!selectedEl || !patch) return;
+    if (!skipUndo) markPatchUndoBoundary();
     var cs = window.getComputedStyle(selectedEl);
 
     if (typeof patch.text === "string") {
       setDirectText(selectedEl, patch.text);
+    }
+
+    if (typeof patch.imgSrc === "string" && selectedEl.tagName.toLowerCase() === "img") {
+      if (patch.imgSrc.trim()) selectedEl.setAttribute("src", patch.imgSrc.trim());
+    }
+    if (typeof patch.imgAlt === "string" && selectedEl.tagName.toLowerCase() === "img") {
+      selectedEl.setAttribute("alt", patch.imgAlt);
+    }
+    if (typeof patch.objectFit === "string" && selectedEl.tagName.toLowerCase() === "img") {
+      setImp(selectedEl, "object-fit", patch.objectFit);
+    }
+    if (typeof patch.href === "string" && selectedEl.tagName.toLowerCase() === "a") {
+      selectedEl.setAttribute("href", patch.href.trim() || "#");
+    }
+    if (typeof patch.targetBlank === "boolean" && selectedEl.tagName.toLowerCase() === "a") {
+      if (patch.targetBlank) {
+        selectedEl.setAttribute("target", "_blank");
+        selectedEl.setAttribute("rel", "noopener noreferrer");
+      } else {
+        selectedEl.removeAttribute("target");
+      }
     }
 
     if (typeof patch.dir === "string") {
@@ -832,9 +1134,11 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
       setImp(selectedEl, "margin-bottom", Math.max(-80, Math.min(180, patch.marginBottom)) + "px");
     }
     if (typeof patch.marginLeft === "number" && isFinite(patch.marginLeft)) {
+      delete selectedEl.dataset.ohAlign;
       setImp(selectedEl, "margin-left", Math.max(-80, Math.min(180, patch.marginLeft)) + "px");
     }
     if (typeof patch.marginRight === "number" && isFinite(patch.marginRight)) {
+      delete selectedEl.dataset.ohAlign;
       setImp(selectedEl, "margin-right", Math.max(-80, Math.min(180, patch.marginRight)) + "px");
     }
     if (typeof patch.opacityPct === "number" && isFinite(patch.opacityPct)) {
@@ -922,11 +1226,14 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
           setImp(selectedEl, "margin-left", "auto");
           setImp(selectedEl, "margin-right", "0px");
         } else {
-          var halfW = Math.round((selectedEl.getBoundingClientRect().width || selectedEl.offsetWidth || 0) / 2);
-          setImp(selectedEl, "left", "50%");
-          setImp(selectedEl, "right", "auto");
-          setImp(selectedEl, "margin-left", -halfW + "px");
-          setImp(selectedEl, "margin-right", "0px");
+          setImp(selectedEl, "left", "0px");
+          setImp(selectedEl, "right", "0px");
+          setImp(selectedEl, "margin-left", "auto");
+          setImp(selectedEl, "margin-right", "auto");
+          if (!selectedEl.style.width) {
+            var curW = Math.round(selectedEl.getBoundingClientRect().width || selectedEl.offsetWidth || 0);
+            if (curW > 0) setImp(selectedEl, "width", curW + "px");
+          }
         }
       } else {
         if (latestCs.position === "relative") {
@@ -975,11 +1282,13 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     if (!selectedEl || !rawCode || !rawCode.trim()) return;
     var code = rawCode.trim();
     try {
+      pushUndoSnapshot();
       if (injectMode === "css") {
         customRuleSeq += 1;
         var cls = "oh-custom-" + customRuleSeq;
         selectedEl.classList.add(cls);
         var styleTag = document.createElement("style");
+        styleTag.setAttribute("data-oh-custom-css", "1");
         if (code.indexOf("{") !== -1) {
           styleTag.textContent = code.replace(/&/g, "." + cls);
         } else {
@@ -1016,6 +1325,7 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
       var styles = Array.prototype.slice.call(frag.querySelectorAll("style"));
       for (var i = 0; i < styles.length; i++) {
         var sEl = document.createElement("style");
+        sEl.setAttribute("data-oh-custom-css", "1");
         sEl.textContent = styles[i].textContent || "";
         (document.head || document.documentElement).appendChild(sEl);
         styles[i].parentNode && styles[i].parentNode.removeChild(styles[i]);
@@ -1041,6 +1351,12 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         selectedEl.parentNode.removeChild(selectedEl);
         if (firstNewEl) {
           selectTarget(firstNewEl);
+        } else {
+          selectedEl = null;
+          originalSnapshot = null;
+          observeSelectedEl(null);
+          if (selectBox) selectBox.style.display = "none";
+          window.parent.postMessage({ __ohStudio: true, type: "selection-cleared" }, "*");
         }
       } else {
         selectedEl.appendChild(frag);
@@ -1073,22 +1389,40 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     if (rectRaf) return;
     rectRaf = window.requestAnimationFrame(function() {
       rectRaf = 0;
-      if (!selectedEl || !document.contains(selectedEl)) return;
-      positionBox(selectBox, selectedEl.getBoundingClientRect());
+      syncSelectOverlay();
     });
   }
 
   function exportCleanHtml() {
+    finishInlineEdit(true);
     var clone = document.documentElement.cloneNode(true);
+    if (clone.style) {
+      clone.style.removeProperty("cursor");
+      if (!clone.getAttribute("style") || !clone.getAttribute("style").trim()) {
+        clone.removeAttribute("style");
+      }
+    }
     var removeNodes = clone.querySelectorAll("[data-oh-studio-ui],[data-oh-studio-bridge]");
     for (var i = 0; i < removeNodes.length; i++) {
       removeNodes[i].parentNode && removeNodes[i].parentNode.removeChild(removeNodes[i]);
+    }
+    var inlineNodes = clone.querySelectorAll("[data-oh-inline-edit]");
+    for (var ie = 0; ie < inlineNodes.length; ie++) {
+      inlineNodes[ie].removeAttribute("contenteditable");
+      inlineNodes[ie].removeAttribute("data-oh-inline-edit");
     }
     var scripts = clone.querySelectorAll("script");
     for (var j = 0; j < scripts.length; j++) {
       var txt = scripts[j].textContent || "";
       if (txt.indexOf("__apiset") !== -1 || txt.indexOf("__ohStudioBridge") !== -1) {
         scripts[j].parentNode && scripts[j].parentNode.removeChild(scripts[j]);
+      }
+    }
+    if (clone.attributes) {
+      for (var ra = clone.attributes.length - 1; ra >= 0; ra--) {
+        if (clone.attributes[ra].name.indexOf("data-oh-") === 0) {
+          clone.removeAttribute(clone.attributes[ra].name);
+        }
       }
     }
     var all = clone.querySelectorAll("*");
@@ -1302,15 +1636,19 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
   }
 
   function selectTarget(target) {
+    if (inlineEditingEl && inlineEditingEl !== target) {
+      finishInlineEdit(true);
+    }
     ensureOverlays();
     if (selectedEl && selectedEl.removeAttribute) selectedEl.removeAttribute("data-oh-sel");
     selectedEl = target;
     selectedEl.setAttribute("data-oh-sel", "1");
     originalSnapshot = snapshotElement(selectedEl);
+    observeSelectedEl(selectedEl);
     selectionSeq += 1;
     var key = "sel-" + selectionSeq;
     var info = buildElementInfo(selectedEl, key);
-    positionBox(selectBox, selectedEl.getBoundingClientRect());
+    syncSelectOverlay();
     if (hoverBox) hoverBox.style.display = "none";
     window.parent.postMessage({
       __ohStudio: true,
@@ -1318,14 +1656,54 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
       mode: mode === "ai-pick" ? "ai-pick" : "manual-edit",
       info: info
     }, "*");
+    notifyHistory();
+  }
+
+  var lastTouchSelectAt = 0;
+  var touchState = null;
+  var touchHoldTimer = 0;
+  var pickStyleEl = null;
+
+  function setPickCursorStyle(active) {
+    if (active) {
+      if (!pickStyleEl || !pickStyleEl.parentNode) {
+        pickStyleEl = document.createElement("style");
+        pickStyleEl.setAttribute("data-oh-studio-ui", "1");
+        pickStyleEl.textContent = "*{cursor:pointer!important;-webkit-tap-highlight-color:transparent!important;}";
+        (document.head || document.documentElement).appendChild(pickStyleEl);
+      }
+    } else if (pickStyleEl && pickStyleEl.parentNode) {
+      pickStyleEl.parentNode.removeChild(pickStyleEl);
+      pickStyleEl = null;
+    }
+  }
+
+  function clearTouchHoldTimer() {
+    if (touchHoldTimer) {
+      window.clearTimeout(touchHoldTimer);
+      touchHoldTimer = 0;
+    }
+  }
+
+  function highlightTouchAt(clientX, clientY) {
+    ensureOverlays();
+    var target = pickTarget(clientX, clientY);
+    hoveredEl = target;
+    if (!target || target === selectedEl) {
+      if (hoverBox) hoverBox.style.display = "none";
+      return target;
+    }
+    positionBox(hoverBox, target.getBoundingClientRect(), hoverTag, describeElement(target));
+    return target;
   }
 
   document.addEventListener("pointermove", function(e) {
-    if (!isPickMode()) return;
+    if (!isPickMode() || inlineEditingEl) return;
+    if (e.pointerType === "touch") return;
     ensureOverlays();
     var target = pickTarget(e.clientX, e.clientY);
     hoveredEl = target;
-    if (!target) {
+    if (!target || target === selectedEl) {
       if (hoverBox) hoverBox.style.display = "none";
       return;
     }
@@ -1338,8 +1716,119 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     if (hoverBox) hoverBox.style.display = "none";
   }, true);
 
+  document.addEventListener("touchstart", function(e) {
+    if (!isPickMode()) return;
+    if (e.touches.length !== 1) {
+      clearTouchHoldTimer();
+      touchState = null;
+      return;
+    }
+    if (inlineEditingEl && inlineEditingEl.contains(e.target)) {
+      clearTouchHoldTimer();
+      touchState = null;
+      return;
+    }
+    var t = e.touches[0];
+    clearTouchHoldTimer();
+    touchState = {
+      startX: t.clientX,
+      startY: t.clientY,
+      lastX: t.clientX,
+      lastY: t.clientY,
+      moved: false,
+      scrubbing: false
+    };
+    touchHoldTimer = window.setTimeout(function() {
+      touchHoldTimer = 0;
+      if (!touchState || touchState.moved || !isPickMode()) return;
+      touchState.scrubbing = true;
+      highlightTouchAt(touchState.lastX, touchState.lastY);
+    }, 260);
+  }, { capture: true, passive: true });
+
+  document.addEventListener("touchmove", function(e) {
+    if (!touchState || !isPickMode()) return;
+    if (e.touches.length !== 1) {
+      clearTouchHoldTimer();
+      touchState = null;
+      if (hoverBox) hoverBox.style.display = "none";
+      return;
+    }
+    var t = e.touches[0];
+    touchState.lastX = t.clientX;
+    touchState.lastY = t.clientY;
+    if (touchState.scrubbing) {
+      if (e.cancelable) e.preventDefault();
+      highlightTouchAt(t.clientX, t.clientY);
+      return;
+    }
+    if (Math.hypot(t.clientX - touchState.startX, t.clientY - touchState.startY) > 10) {
+      touchState.moved = true;
+      clearTouchHoldTimer();
+    }
+  }, { capture: true, passive: false });
+
+  document.addEventListener("touchend", function(e) {
+    clearTouchHoldTimer();
+    if (!touchState || !isPickMode()) {
+      touchState = null;
+      return;
+    }
+    var st = touchState;
+    touchState = null;
+    if (hoverBox) hoverBox.style.display = "none";
+    hoveredEl = null;
+    if (st.moved && !st.scrubbing) return;
+    var ct = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
+    var cx = ct ? ct.clientX : st.lastX;
+    var cy = ct ? ct.clientY : st.lastY;
+    var target = pickTarget(cx, cy);
+    if (!target) return;
+    if (inlineEditingEl) finishInlineEdit(true);
+    lastTouchSelectAt = Date.now();
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    selectTarget(target);
+  }, { capture: true, passive: false });
+
+  document.addEventListener("touchcancel", function() {
+    clearTouchHoldTimer();
+    touchState = null;
+    hoveredEl = null;
+    if (hoverBox) hoverBox.style.display = "none";
+  }, { capture: true, passive: true });
+
+  document.addEventListener("mousedown", function(e) {
+    if (!isPickMode()) return;
+    if (Date.now() - lastTouchSelectAt < 500) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (inlineEditingEl && inlineEditingEl.contains(e.target)) return;
+    var target = pickTarget(e.clientX, e.clientY);
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  document.addEventListener("submit", function(e) {
+    if (!isPickMode()) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
   document.addEventListener("click", function(e) {
     if (!isPickMode()) return;
+    if (Date.now() - lastTouchSelectAt < 500) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      return;
+    }
+    if (inlineEditingEl && inlineEditingEl.contains(e.target)) return;
+    if (inlineEditingEl) finishInlineEdit(true);
     var target = pickTarget(e.clientX, e.clientY);
     if (!target) return;
     e.preventDefault();
@@ -1348,7 +1837,103 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     selectTarget(target);
   }, true);
 
-  window.addEventListener("scroll", function() {
+  document.addEventListener("dblclick", function(e) {
+    if (mode !== "manual-edit") return;
+    var target = pickTarget(e.clientX, e.clientY);
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (selectedEl !== target) selectTarget(target);
+    startInlineEdit(target);
+  }, true);
+
+  document.addEventListener("input", function(e) {
+    if (!inlineEditingEl || e.target !== inlineEditingEl) return;
+    scheduleRectSync();
+    window.parent.postMessage({
+      __ohStudio: true,
+      type: "element-synced",
+      info: buildElementInfo(inlineEditingEl, "sel-" + selectionSeq)
+    }, "*");
+  }, true);
+
+  document.addEventListener("focusout", function(e) {
+    if (inlineEditingEl && e.target === inlineEditingEl) {
+      finishInlineEdit(true);
+    }
+  }, true);
+
+  document.addEventListener("keydown", function(e) {
+    if (mode !== "manual-edit") return;
+    if (inlineEditingEl) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        finishInlineEdit(false);
+      } else if (e.key === "Enter" && !e.shiftKey) {
+        var tag = inlineEditingEl.tagName.toLowerCase();
+        if (tag !== "p" && tag !== "div" && tag !== "li" && tag !== "blockquote") {
+          e.preventDefault();
+          e.stopPropagation();
+          finishInlineEdit(true);
+        }
+      }
+      return;
+    }
+
+    var mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.shiftKey) performRedo();
+      else performUndo();
+      return;
+    }
+    if (mod && (e.key === "y" || e.key === "Y")) {
+      e.preventDefault();
+      e.stopPropagation();
+      performRedo();
+      return;
+    }
+
+    if (!selectedEl) return;
+    var step = e.shiftKey ? 10 : 1;
+    var dx = 0, dy = 0;
+    if (e.key === "ArrowLeft") dx = -step;
+    else if (e.key === "ArrowRight") dx = step;
+    else if (e.key === "ArrowUp") dy = -step;
+    else if (e.key === "ArrowDown") dy = step;
+    if (dx !== 0 || dy !== 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      var tf = readTransformData(selectedEl);
+      applyPatch({
+        offsetX: Math.max(-400, Math.min(400, tf.offsetX + dx)),
+        offsetY: Math.max(-400, Math.min(400, tf.offsetY + dy))
+      });
+      window.parent.postMessage({
+        __ohStudio: true,
+        type: "element-synced",
+        info: buildElementInfo(selectedEl, "sel-" + selectionSeq)
+      }, "*");
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (selectedEl.parentNode) {
+        e.preventDefault();
+        e.stopPropagation();
+        pushUndoSnapshot();
+        selectedEl.parentNode.removeChild(selectedEl);
+        selectedEl = null;
+        originalSnapshot = null;
+        observeSelectedEl(null);
+        if (selectBox) selectBox.style.display = "none";
+        window.parent.postMessage({ __ohStudio: true, type: "element-deleted" }, "*");
+      }
+    }
+  }, true);
+
+  document.addEventListener("scroll", function() {
     if (selectedEl) scheduleRectSync();
   }, { passive: true, capture: true });
 
@@ -1360,24 +1945,58 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     var data = e.data;
     if (!data || data.__ohStudio !== true) return;
     if (data.type === "set-mode") {
+      finishInlineEdit(true);
+      clearTouchHoldTimer();
+      touchState = null;
       mode = data.mode || "off";
+      window.__ohStudioMode = mode;
       document.documentElement.style.cursor = isPickMode() ? "crosshair" : "";
+      setPickCursorStyle(isPickMode());
       if (!isPickMode()) {
         hoveredEl = null;
         if (selectedEl && selectedEl.removeAttribute) selectedEl.removeAttribute("data-oh-sel");
         selectedEl = null;
         originalSnapshot = null;
+        observeSelectedEl(null);
         hideOverlays();
       } else {
         ensureOverlays();
+        if (selectedEl && document.contains(selectedEl)) {
+          syncSelectOverlay();
+        }
+        notifyHistory();
       }
     } else if (data.type === "clear-selection") {
+      finishInlineEdit(true);
       if (selectedEl && selectedEl.removeAttribute) selectedEl.removeAttribute("data-oh-sel");
       selectedEl = null;
       originalSnapshot = null;
+      observeSelectedEl(null);
       if (selectBox) selectBox.style.display = "none";
     } else if (data.type === "apply-style") {
       applyPatch(data.patch);
+    } else if (data.type === "nudge") {
+      if (selectedEl) {
+        var ntf = readTransformData(selectedEl);
+        var ndx = typeof data.dx === "number" ? data.dx : 0;
+        var ndy = typeof data.dy === "number" ? data.dy : 0;
+        applyPatch({
+          offsetX: Math.max(-400, Math.min(400, ntf.offsetX + ndx)),
+          offsetY: Math.max(-400, Math.min(400, ntf.offsetY + ndy))
+        });
+        window.parent.postMessage({
+          __ohStudio: true,
+          type: "element-synced",
+          info: buildElementInfo(selectedEl, "sel-" + selectionSeq)
+        }, "*");
+      }
+    } else if (data.type === "undo") {
+      performUndo();
+    } else if (data.type === "redo") {
+      performRedo();
+    } else if (data.type === "mark-saved") {
+      savedHistoryVersion = historyVersion;
+      notifyHistory();
     } else if (data.type === "select-parent") {
       if (selectedEl && selectedEl.parentElement && selectedEl.parentElement !== document.body && selectedEl.parentElement !== document.documentElement) {
         selectTarget(selectedEl.parentElement);
@@ -1385,9 +2004,11 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
     } else if (data.type === "reorder-element") {
       if (selectedEl && selectedEl.parentNode) {
         if (data.dir === "up" && selectedEl.previousElementSibling) {
+          pushUndoSnapshot();
           selectedEl.parentNode.insertBefore(selectedEl, selectedEl.previousElementSibling);
           scheduleRectSync();
         } else if (data.dir === "down" && selectedEl.nextElementSibling) {
+          pushUndoSnapshot();
           selectedEl.parentNode.insertBefore(selectedEl.nextElementSibling, selectedEl);
           scheduleRectSync();
         }
@@ -1396,6 +2017,7 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
       injectCustomCode(data.mode || "replace", data.code || "");
     } else if (data.type === "duplicate-element") {
       if (selectedEl && selectedEl.parentNode) {
+        pushUndoSnapshot();
         var copy = selectedEl.cloneNode(true);
         if (copy.removeAttribute) {
           copy.removeAttribute("id");
@@ -1407,18 +2029,31 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
       }
     } else if (data.type === "delete-element") {
       if (selectedEl && selectedEl.parentNode) {
+        finishInlineEdit(false);
+        pushUndoSnapshot();
         selectedEl.parentNode.removeChild(selectedEl);
         selectedEl = null;
         originalSnapshot = null;
+        observeSelectedEl(null);
         if (selectBox) selectBox.style.display = "none";
         window.parent.postMessage({ __ohStudio: true, type: "element-deleted" }, "*");
       }
     } else if (data.type === "reset-element") {
       if (selectedEl && originalSnapshot) {
+        finishInlineEdit(false);
+        pushUndoSnapshot();
         if (originalSnapshot.styleAttr === null) selectedEl.removeAttribute("style");
         else selectedEl.setAttribute("style", originalSnapshot.styleAttr);
         if (originalSnapshot.dirAttr === null) selectedEl.removeAttribute("dir");
         else selectedEl.setAttribute("dir", originalSnapshot.dirAttr);
+        if (originalSnapshot.srcAttr === null) selectedEl.removeAttribute("src");
+        else selectedEl.setAttribute("src", originalSnapshot.srcAttr);
+        if (originalSnapshot.altAttr === null) selectedEl.removeAttribute("alt");
+        else selectedEl.setAttribute("alt", originalSnapshot.altAttr);
+        if (originalSnapshot.hrefAttr === null) selectedEl.removeAttribute("href");
+        else selectedEl.setAttribute("href", originalSnapshot.hrefAttr);
+        if (originalSnapshot.targetAttr === null) selectedEl.removeAttribute("target");
+        else selectedEl.setAttribute("target", originalSnapshot.targetAttr);
         selectedEl.innerHTML = originalSnapshot.innerHTML;
         if (originalSnapshot.value !== undefined && "value" in selectedEl) {
           selectedEl.value = originalSnapshot.value;
@@ -1430,7 +2065,7 @@ export const PREVIEW_STUDIO_BRIDGE_SCRIPT = `<script data-oh-studio-bridge="1">
         }
         selectionSeq += 1;
         var resetKey = "sel-" + selectionSeq;
-        positionBox(selectBox, selectedEl.getBoundingClientRect());
+        syncSelectOverlay();
         window.parent.postMessage({
           __ohStudio: true,
           type: "element-selected",

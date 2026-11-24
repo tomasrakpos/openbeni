@@ -17,6 +17,8 @@ interface UiState {
   /** The Google sign-up page, shown on demand over the app. */
   authGateOpen: boolean;
   searchOpen: boolean;
+  /** True while the top navbar pill is morphed into AppleSpotlight search mode. */
+  navSearchOpen: boolean;
   modelPickerOpen: boolean;
   providerPanelOpen: boolean;
   rightTab: RightTab;
@@ -35,6 +37,7 @@ interface UiState {
   setAuthOpen: (open: boolean) => void;
   setAuthGateOpen: (open: boolean) => void;
   setSearchOpen: (open: boolean) => void;
+  setNavSearchOpen: (open: boolean) => void;
   setModelPickerOpen: (open: boolean) => void;
   setProviderPanelOpen: (open: boolean) => void;
   setRightTab: (tab: RightTab) => void;
@@ -56,6 +59,7 @@ export const useUiStore = create<UiState>()((set) => ({
   authOpen: false,
   authGateOpen: false,
   searchOpen: false,
+  navSearchOpen: false,
   modelPickerOpen: false,
   providerPanelOpen: false,
   rightTab: "preview",
@@ -74,6 +78,7 @@ export const useUiStore = create<UiState>()((set) => ({
   setAuthOpen: (authOpen) => set({ authOpen }),
   setAuthGateOpen: (authGateOpen) => set({ authGateOpen }),
   setSearchOpen: (searchOpen) => set({ searchOpen }),
+  setNavSearchOpen: (navSearchOpen) => set({ navSearchOpen }),
   setModelPickerOpen: (modelPickerOpen) => set({ modelPickerOpen }),
   setProviderPanelOpen: (providerPanelOpen) => set({ providerPanelOpen }),
   setRightTab: (rightTab) => set({ rightTab }),

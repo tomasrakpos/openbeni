@@ -39,6 +39,3 @@ backups/
 *.njsproj
 *.sln
 *.sw?
-
-# Test runner output
-.vitest/

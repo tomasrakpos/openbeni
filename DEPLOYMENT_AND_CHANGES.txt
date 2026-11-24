@@ -30,7 +30,9 @@
       supabase/migrations/0004_credits_and_tokens.sql
       supabase/migrations/0005_user_providers.sql
       supabase/migrations/0006_free_model_routers.sql
-   (اگر دیتابیس کاملاً جدید است، از `0001_init.sql` تا `0006_free_model_routers.sql`
+      supabase/migrations/0007_token_credits.sql
+      supabase/migrations/0008_multi_provider_routers.sql
+   (اگر دیتابیس کاملاً جدید است، از `0001_init.sql` تا `0008_multi_provider_routers.sql`
    به ترتیب اجرا شوند.)
 
 --------------------------------------------------------------------------------
@@ -39,10 +41,17 @@
 
 الف) قابلیت‌های جدید بک‌اند و دیتابیس (Cloudflare Pages Functions + Supabase)
 --------------------------------------------------------------------------------
-1. سیستم Free Model Router (روتر خودکار مدل‌های رایگان):
-   - Migration جدید: `supabase/migrations/0006_free_model_routers.sql`
+1. سیستم Free Model Router (روتر خودکار و چندپرووایدری مدل‌های رایگان):
+   - Migrationهای جدید:
+     `supabase/migrations/0006_free_model_routers.sql`
      (ستون `pricing` برای `catalog_models` و `user_models`، جداول `routers` و
-     `router_members`، RLS و تریگرهای همگام‌سازی خودکار مدل‌های رایگان).
+     `router_members`، RLS و تریگرهای همگام‌سازی خودکار مدل‌های رایگان)
+     `supabase/migrations/0008_multi_provider_routers.sql`
+     (پشتیبانی چندپرووایدری با ستون‌های `provider_ids uuid[]` و `user_provider_ids uuid[]`
+     برای روترهای عمومی ادمین و روترهای شخصی BYOK کاربران، حفظ روتر هنگام حذف یکی از
+     پرووایدرها تا زمانی که پرووایدر دیگری باقی مانده باشد، و اصلاح تریگر
+     `sync_catalog_model_router_membership` به‌طوری که مخفی کردن مدل در کاتالوگ
+     `enabled = false` آن را از روتر رایگان ادمین حذف نکند).
    - هسته مشترک روتینگ: `src/lib/routerEngine.ts`
      (الگوریتم Round-Robin و Failover حداکثر ۳ تلاش فقط پیش از شروع استریم،
      بدون ریستارت میان‌استریم).
@@ -51,8 +60,8 @@
      `functions/api/routers.ts`
      `functions/api/routers/[id].ts`
      و مسیر Path 0 (`executeRouterChat`) در `functions/api/_lib/serverChat.ts`.
-   - استور و رابط کاربری: `src/stores/routers.ts` + بخش مدیریت روترها در پنل ادمین
-     و انتخاب‌گر مدل.
+   - استور و رابط کاربری: `src/stores/routers.ts` + بخش مدیریت روترهای چندپرووایدری
+     در پنل ادمین و صفحه پرووایدرهای سایت عمومی و انتخاب‌گر مدل.
 
 2. سیستم BYOK / پرووایدرهای شخصی کاربر و معافیت از کریدیت سایت:
    - Migration جدید: `supabase/migrations/0005_user_providers.sql`
@@ -65,9 +74,14 @@
      پرووایدرهای اضافه‌شده توسط کاربر (`billing_source = 'byok'`) هرگز کریدیت و سهمیه
      سایت را مصرف نمی‌کنند.
 
-3. سیستم کریدیت (۵ کریدیت اولیه) و توکن‌های API شخصی کاربر:
-   - Migration جدید: `supabase/migrations/0004_credits_and_tokens.sql`
+3. سیستم کریدیت مبتنی بر توکن (۵ کریدیت اولیه، رزرو اتمیک و دفترکل) و توکن‌های API کاربر:
+   - Migrationهای جدید:
+     `supabase/migrations/0004_credits_and_tokens.sql`
      (ستون `credits` با پیش‌فرض ۵، تابع اتمیک `consume_user_credits` و جدول `user_tokens`).
+     `supabase/migrations/0007_token_credits.sql`
+     (محاسبه کسری کریدیت بر اساس توکن مصرفی و `model_weight` با کف/سقف قابل تنظیم،
+     جداول `user_credits`، `credit_ledger` و `credit_reservations` با رزرو اتمیک هم‌زمان،
+     آزادسازی خودکار در خطای upstream و محاسبه دقیق هنگام قطع میان‌استریم).
    - اندپوینت‌ها: `functions/api/_lib/tokenHandlers.ts` و `functions/api/tokens/[[path]].ts`.
 
 4. موتور هوشمند بررسی سلامت کلید و تشخیص مدل‌های Free/Paid:
@@ -146,29 +160,109 @@
      افزودن یک بار `refreshSession()` خودکار هنگام 401، timeout بیکاری ۹۰ ثانیه روی استریم،
      و نرمال‌سازی فیلدهای `usage` در حالت پاسخ JSON.
 
-ج) آماده‌سازی برای دیپلوی روی Cloudflare Pages
+ج) آماده‌سازی و ممیزی نهایی برای دیپلوی روی Cloudflare Pages
 --------------------------------------------------------------------------------
 1. بررسی کامل `functions/api/*`: بدون هیچ استفاده از `process.env` یا ماژول‌های Node-only
-   (کاملاً سازگار با Cloudflare Pages Functions).
-2. افزودن fallback ایمن `context.env ?? {}` در:
-   `functions/api/routers.ts`، `functions/api/routers/[id].ts`،
-   `functions/api/preview-intent.ts` و `functions/api/provider-inspect.ts`.
+   (کاملاً سازگار با Cloudflare Pages Functions؛ حجم کل پوشه `functions/` فقط ~692KB).
+2. افزودن fallback ایمن `context.env ?? {}` در تمام روت‌های Cloudflare Pages Functions.
 3. تایید SPA fallback (`public/_redirects` با محتوای `/* /index.html 200`) و هدرهای امنیتی
-   (`public/_headers`) و کپی شدن هر دو در خروجی `dist/`.
-4. کامل کردن فایل `.env.example` با نام تمام متغیرهای سرور و فرانت‌اند بدون هیچ مقدار واقعی.
+   (`public/_headers`) و کپی شدن هر دو به همراه ۸۷۶ فایل اسکیل (`dist/_skills/*`) در خروجی `dist/`.
+4. رفع ۴ مورد حیاتی کشف‌شده در ممیزی پیش از دیپلوی روی کلودفلر:
+   - اصلاح هدر `Permissions-Policy` در `public/_headers` و `vite.config.ts` از
+     `microphone=()` به `microphone=(self)` تا تایپ صوتی (Web Speech) روی سایت
+     منتشرشده مسدود نشود.
+   - مهاجرت `src/lib/highlight.ts` به `shiki/core` + موتور جاوااسکریپتی
+     (`shiki/engine/javascript`) و بارگذاری تنبل فقط ۲۱ زبان و ۲ تم مورد نیاز:
+     حذف کامل وابستگی WASM (سازگاری ۱۰۰٪ با CSP سخت‌گیرانه `script-src 'self'` روی
+     کلودفلر)، کاهش چشمگیر تعداد فایل‌های بیلد و رساندن زمان `npm run build` به ~۲۱ ثانیه.
+   - ایمن‌سازی `createAssetsSkillReader` در `functions/api/_lib/skills/registry.ts` برای
+     رد کردن پاسخ‌های `text/html` تا در صورت نبود یک فایل اسکیل، هرگز SPA fallback
+     (`index.html`) وارد پرامپت مدل نشود.
+   - افزودن پاسخ `OPTIONS` (CORS preflight) به `handleSession` و `handleConfig` در
+     `functions/api/_lib/sessionHandlers.ts`.
+5. کامل کردن فایل `.env.example` با نام تمام متغیرهای سرور و فرانت‌اند بدون هیچ مقدار واقعی.
 
-د) بهبودهای برندینگ، ظاهر و تجربه کاربری (نسخه‌های قبلی تا امروز)
+د) بهبودهای برندینگ، رابط کاربری، انیمیشن و رفع باگ‌های فرانت‌اند (تا آخرین آپدیت)
 --------------------------------------------------------------------------------
-- لوگوی شفاف `public/brand/wordmark.png`، دکمه‌ها و کامپوننت‌های Glass UI،
-  نشانگر کریدیت (`CreditJellyGauge.tsx`)، منوها و پنل ادمین دو‌زبانه (EN/FA)،
-  چیدمان ریسپانسیو دسکتاپ و موبایل، و بهبود جریان اضافه کردن پرووایدر و انتخاب مدل.
+1. تبدیل درجا (Morph) نوبار بالای صفحه به سرچ AppleSpotlight:
+   - فایل‌های جدید/ویرایش‌شده:
+     `src/components/ui/apple-spotlight.tsx`
+     `src/features/layout/AppNav.tsx`
+     `src/features/layout/TopBar.tsx`
+     `src/features/layout/CreditJellyGauge.tsx`
+     `src/stores/ui.ts` (افزودن وضعیت `navSearchOpen` / `setNavSearchOpen`)
+   - رفتار و انیمیشن:
+     - در حالت عادی نوبار شیشه‌ای/آبی (`LiquidNavbar`) و نشانگر کریدیت بدون هیچ تغییری
+       و با حفظ کامل افکت شیشه‌ای و شیدر آب نمایش داده می‌شوند.
+     - هنگام کلیک روی آیکون سرچ: ابتدا دو منوی چپ و راست هدر (`CornerMenu`) و نشانگر
+       کریدیت به نرمی محو می‌شوند؛ سپس خود کپسول نوبار (بدون باز شدن مودال جدا و بدون
+       unmount شدن) به نرمی به سمت راست حرکت کرده و مستقیماً به کادر سرچ AppleSpotlight
+       تبدیل می‌شود و هم‌زمان ۴ دایرهٔ آپشن در سمت چپ آن با فیلتر گویی `#blob` ظاهر می‌شوند
+       (`گفتگوها`، `گفتگوی جدید`، `پرووایدرها`، `تنظیمات`).
+     - اندازهٔ دقیق: ارتفاع دقیقاً هم‌قد نوبار (`42px`) در دسکتاپ و موبایل؛ در دسکتاپ عرض
+       کادر سرچ کمی کوچک‌تر از نوبار دسکتاپ می‌شود (`~248–306px`) و در موبایل هم‌اندازهٔ
+       نوبار موبایل (`~160–196px`) با ۴ دایرهٔ جمع‌وجور در سمت چپ.
+     - جستجوی زندهٔ واقعی: جستجو روی متن پیام‌های همهٔ گفتگوها (`useChatSearch`)، عنوان
+       گفتگوها، پرووایدرها، مدل‌های فعال و اکشن‌های سریع، همراه با ناوبری کیبورد
+       (`ArrowUp` / `ArrowDown` / `Enter` / `Escape`) و باز شدن کارت نتایج زیر کادر سرچ.
+     - پشتیبانی کامل از تم روشن و تاریک: پیش‌فرض روشن (`neutral-100`) و تغییر خودکار به
+       ظاهر تیره (`#1b1c21`) هنگام فعال بودن تم `dark` یا `system` در حالت تیره.
+     - انیمیشن برعکس کامل: با کلیک روی «بازگشت»، زدن `Esc` یا کلیک بیرون کادر، ابتدا ۴
+       آپشن سمت چپ به داخل کادر جمع می‌شوند، بعد کادر سرچ به سمت چپ (وسط هدر) برمی‌گردد
+       و به نوبار شیشه‌ای قبلی تبدیل می‌شود و در انتها منوهای چپ و راست هدر دوباره ظاهر می‌شوند.
+
+2. بازنویسی و رفع کامل باگ تایپ صوتی / دیکته (Voice Input):
+   - فایل‌های ویرایش‌شده/جدید:
+     `src/features/chat/useVoiceInput.ts`
+     `src/features/chat/ThreadComposer.tsx`
+     `src/features/chat/EmptyState.tsx`
+     `src/lib/i18n.ts`
+     `tests/voiceInput.test.ts`
+   - اتصال دکمهٔ میکروفون به هر دو کامپوزر (صفحه گفتگوی جدید و گفتگوی فعال)، ترکیب زندهٔ
+     متن موقت و نهایی، حذف تکرارهای رایج در اندروید، ایزوله‌سازی نشست‌ها با `sessionId`،
+     شروع مجدد خودکار پس از سکوت، حفظ ویرایش‌های دستی کاربر، توقف تمیز هنگام ارسال پیام،
+     و نمایش پیام‌های خطای دقیق دوزبانه (عدم مجوز، نبود میکروفون، محیط ناامن، خطای شبکه).
+
+3. رفع باگ قفل‌شدن و پرش اسکرول چت هنگام ساخت سایت و استریم کارت وظایف:
+   - فایل‌های ویرایش‌شده/جدید:
+     `src/features/chat/autoScroll.ts`
+     `src/features/chat/MessageList.tsx`
+     `tests/messageListScroll.test.ts`
+   - جلوگیری از برگشت اجباری اسکرول به پایین هنگامی که کاربر هنگام استریم پاسخ یا آپدیت
+     زندهٔ کارت ساخت پروژه به سمت بالا اسکرول می‌کند.
+
+4. بازطراحی اختصاصی و انیمیشن‌دار مدیریت پرووایدرها، مدل‌ها و روترها:
+   - فایل‌های ویرایش‌شده/جدید:
+     `src/features/providers/ProviderManager.tsx`
+     `src/features/providers/provider-manager.css`
+     `src/features/providers/ProvidersPage.tsx`
+     `src/components/ui/glow-button.tsx`
+   - هماهنگ‌سازی کامل ظاهر کارت‌ها، آیکون‌ها و بج‌های Free/Paid با طراحی اختصاصی سایت
+     (حذف ظاهر کلیشه‌ای) و انیمیشن نرم برای تمام تعامل‌های باز/بسته شدن و کشویی‌ها.
+
+5. برندینگ و تجربه کاربری پایه:
+   - لوگوی شفاف `public/brand/wordmark.png`، دکمه‌ها و کامپوننت‌های Glass UI،
+     نشانگر کریدیت (`CreditJellyGauge.tsx`)، منوها و پنل ادمین دوزبانه (EN/FA)،
+     چیدمان ریسپانسیو دسکتاپ و موبایل، و بهبود جریان اضافه کردن پرووایدر و انتخاب مدل.
 
 --------------------------------------------------------------------------------
-۳) وضعیت تست و بیلد تاییدشده
+۳) وضعیت تست و تایید فنی (آخرین بررسی پیش از دیپلوی کلودفلر)
 --------------------------------------------------------------------------------
-- TypeScript Check (`npx tsc -b --noEmit`): 0 خطا
-- Automated Tests (`npx vitest run`): 25 فایل تست / 247 تست همگی پاس‌شده
-  (شامل تست‌های جدید `tests/freeRouter.test.ts` و `tests/fullStackAuditFixes.test.ts`)
-- Production Build (`npx vite build`): موفق (3870 ماژول، خروجی آماده در `dist/`)
+- TypeScript Check (`npm run typecheck` / `tsc -b --noEmit`): 0 خطا
+- Automated Tests (`npm test` / `vitest run`): 33 فایل تست / 291 تست همگی پاس‌شده
+  (شامل `tests/freeRouter.test.ts`، `tests/fullStackAuditFixes.test.ts`،
+  `tests/tokenCredits.test.ts`، `tests/externalSkills.test.ts`،
+  `tests/messageListScroll.test.ts`، `tests/voiceInput.test.ts` و...)
+- Production Build (`npm run build`): موفق در 20.92 ثانیه
+  - ایندکس اسکیل‌ها: 149 اسکیل و 84 مرجع `DESIGN.md` در `skillsIndex.generated.ts` (154 KB)
+  - خروجی `dist/`: 3,593 ماژول، حجم کل 22 MB، شامل `_redirects`، `_headers`، `accent.js`
+    و 876 فایل اسکیل در `dist/_skills/` برای `env.ASSETS` کلودفلر
+- یادآوری دیپلوی:
+  1. پیش از انتشار نهایی، اجرای Migrationهای تا `0008_multi_provider_routers.sql` در Supabase.
+  2. تنظیم متغیرهای سرور (`SUPABASE_URL`، `SUPABASE_ANON_KEY`، `SUPABASE_SERVICE_ROLE_KEY`،
+     `ADMIN_PASSWORD`، `ADMIN_SESSION_SECRET`، `MASTER_ENCRYPTION_KEY` و در صورت نیاز
+     `ADMIN_EMAILS`) و متغیرهای بیلد (`VITE_SUPABASE_URL`، `VITE_SUPABASE_ANON_KEY`) در
+     Cloudflare Pages.
+  3. تنظیم Build command روی `npm run build` و Build output directory روی `dist`.
 
 ================================================================================

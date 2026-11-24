@@ -1,12 +1,14 @@
 // layout feature: CreditJellyGauge — Apple Tahoe LiquidGlass 0-100 credit pill
 // seated beneath the floating AppNav bar, with real-time streaming drain and
 // the CornerMenu center-anchored morph animation into a matching LiquidGlass card.
-import { ChevronDown, Coins, KeyRound, Lock, RotateCcw, Zap } from "lucide-react";
+import { ChevronDown, Coins, KeyRound, Lock, Zap } from "lucide-react";
 import * as React from "react";
 import { LiquidGlass } from "@/components/ui/apple-tahoe-liquid-glass-button";
 import { WaterRippleFill } from "@/components/ui/water-ripple-image";
 import { useT } from "@/lib/i18n";
+import { attachOutsideDismiss } from "@/lib/outsideDismiss";
 import { loadAuthPanel } from "@/lib/preload";
+import { JellyStretchEngine, useJellyStretch } from "@/lib/useJellyStretch";
 import { cn } from "@/lib/utils";
 import { DEFAULT_SIGNUP_CREDITS, useAuthStore } from "@/stores/auth";
 import { useChatsStore } from "@/stores/chats";
@@ -23,7 +25,7 @@ const F = [313, 73, 869, 668, 75, 75, 1, 0, 1, 0, 1];
 const K = (f: number, a: number[], b: number[]) => [f, ...a, ...b];
 
 const OPEN: number[][] = [
-  K(97, [692, 545, 836, 689, 72, 72, 0.5, 8, 0, 0, 0], BT),
+  K(97.5, [692, 545, 836, 689, 72, 72, 0.5, 8, 0, 0, 0], BT),
   K(98, [692, 545, 836, 689, 72, 72, 0.5, 8, 0, 0, 0], [0, 0.85, 1.5, 0, 0, 1.2]),
   K(99, [581, 361, 805, 604, 112, 14, 0.69, 8, 0.5, 0, 1], [0, 0, 2, 0, 0, 1.2]),
   K(100, [474, 196, 833, 580, 180, 30, 1.06, 7, 0.6, 0, 1], Z),
@@ -35,9 +37,7 @@ const OPEN: number[][] = [
   K(106, [301, 60, 872, 669, 85, 85, 1.03, 0, 1, 0, 1], Z),
   K(107, [304, 67, 871, 672, 80, 80, 1.01, 0, 1, 0, 1], Z),
   K(108, [308, 73, 870, 671, 76, 76, 1, 0, 1, 0, 1], Z),
-  K(110, [311, 74, 870, 671, 75, 75, 1, 0, 1, 0, 1], Z),
-  K(112, [312, 74, 870, 669, 75, 75, 1, 0, 1, 0, 1], Z),
-  K(114, F, Z),
+  K(109.5, F, Z),
 ];
 
 const CLOSE: number[][] = [
@@ -51,11 +51,11 @@ const CLOSE: number[][] = [
   K(139, [679, 509, 802, 688, 70, 30, 0.3, 0, 0, 0, 1], [0, 1, 0.8, -6, 10, 1.03]),
   K(140, [692, 548, 836, 692, 72, 72, 0.3, 0, 0, 0, 1], [0.6, 1, 0.4, 0, 0, 1]),
   K(141, [692, 545, 836, 689, 72, 72, 0.3, 0, 0, 0, 0], BT),
-  K(144, [692, 545, 836, 689, 72, 72, 0.3, 0, 0, 0, 0], BT),
 ];
 
-const FRAME_MS = 30;
+const FRAME_MS = 21;
 const FINAL_CARD_RADIUS = 22;
+const SAMPLE_BUF = new Array<number>(18).fill(0);
 
 function sample(k: number[][], f: number) {
   let i = 0;
@@ -63,7 +63,10 @@ function sample(k: number[][], f: number) {
   const a = k[i];
   const b = k[i + 1];
   const t = Math.max(0, Math.min(1, (f - a[0]) / (b[0] - a[0])));
-  return a.map((x, j) => x + (b[j] - x) * t);
+  for (let j = 0; j < a.length; j += 1) {
+    SAMPLE_BUF[j] = a[j] + (b[j] - a[j]) * t;
+  }
+  return SAMPLE_BUF;
 }
 
 /**
@@ -107,6 +110,7 @@ const JELLY_CSS = `
   opacity: 0;
   pointer-events: none;
   z-index: 35;
+  display: none;
 }
 .cj-anchor {
   position: relative;
@@ -134,6 +138,7 @@ const JELLY_CSS = `
   background: transparent;
   cursor: pointer;
   user-select: none;
+  touch-action: none;
   -webkit-tap-highlight-color: transparent;
 }
 .cj-pill:focus-visible {
@@ -168,7 +173,6 @@ const JELLY_CSS = `
   border-radius: inherit;
   overflow: hidden;
   pointer-events: none;
-  will-change: width, transform;
   transform-origin: left center;
 }
 .cj-bubble-gloss {
@@ -192,8 +196,6 @@ const JELLY_CSS = `
   position: absolute;
   left: 0;
   top: 0;
-  width: 0;
-  height: 0;
   visibility: hidden;
   overflow: hidden;
   pointer-events: none;
@@ -206,16 +208,16 @@ const JELLY_CSS = `
   top: 0;
   z-index: 0;
   pointer-events: none;
-  transform-origin: 0 0;
 }
 .cj-cont {
   position: absolute;
+  left: 0;
+  top: 0;
   z-index: 1;
   padding: 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
-  transform-origin: center center;
   color: var(--foreground);
 }
 .cj-cont::-webkit-scrollbar {
@@ -304,12 +306,10 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
   const t = useT();
   const signedIn = useAuthStore((s) => s.signedIn);
   const authReady = useAuthStore((s) => s.ready);
-  const devMockSession = useAuthStore((s) => s.devMockSession);
   const profile = useAuthStore((s) => s.profile);
   const user = useAuthStore((s) => s.user);
   const tokens = useAuthStore((s) => s.tokens);
   const loadTokens = useAuthStore((s) => s.loadTokens);
-  const resetDevCredits = useAuthStore((s) => s.resetDevCredits);
   const streaming = useChatsStore((s) => s.streaming);
   const theme = useSettingsStore((s) => s.settings.theme);
   const view = useUiStore((s) => s.view);
@@ -318,20 +318,26 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
   const authOpen = useUiStore((s) => s.authOpen);
   const paletteOpen = useUiStore((s) => s.paletteOpen);
   const searchOpen = useUiStore((s) => s.searchOpen);
+  const navSearchOpen = useUiStore((s) => s.navSearchOpen);
   const setAuthOpen = useUiStore((s) => s.setAuthOpen);
   const setAuthGateOpen = useUiStore((s) => s.setAuthGateOpen);
 
   const [expanded, setExpanded] = React.useState(false);
-  const [layerActive, setLayerActive] = React.useState(false);
   const [cardDims, setCardDims] = React.useState({ width: 344, height: 320 });
 
+  const layerRef = React.useRef<HTMLDivElement | null>(null);
   const anchorRef = React.useRef<HTMLDivElement | null>(null);
   const pillStageRef = React.useRef<HTMLDivElement | null>(null);
   const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const guestStageRef = React.useRef<HTMLDivElement | null>(null);
+  const guestTriggerRef = React.useRef<HTMLButtonElement | null>(null);
   const cardRef = React.useRef<HTMLDivElement | null>(null);
   const glassHostRef = React.useRef<HTMLDivElement | null>(null);
   const contRef = React.useRef<HTMLDivElement | null>(null);
   const scrimRef = React.useRef<HTMLDivElement | null>(null);
+  const miniWaterControlRef = React.useRef<((paused: boolean) => void) | null>(null);
+
+  const manageBtnJellyRef = useJellyStretch<HTMLButtonElement>();
 
   const stateRef = React.useRef<"closed" | "opening" | "open" | "closing">("closed");
   const animRef = React.useRef<{ kind: "open" | "close"; t0: number } | null>(null);
@@ -402,6 +408,17 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
   // true -> false when inline search opens and closes) so refs never go stale.
   const isSignedInReady = signedIn && Boolean(profile);
   const isGaugeMounted = !hidden && isSignedInReady;
+  const isGuestMounted = !hidden && authReady && !isSignedInReady;
+
+  React.useEffect(() => {
+    if (!isGuestMounted) return;
+    const stage = guestStageRef.current;
+    const btn = guestTriggerRef.current;
+    if (!stage || !btn) return;
+    const engine = new JellyStretchEngine(btn, stage);
+    return () => engine.destroy();
+  }, [isGuestMounted]);
+
   React.useEffect(() => {
     if (!isGaugeMounted) {
       cancelAnimationFrame(morphRafRef.current);
@@ -411,9 +428,9 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
       closeQueuedRef.current = false;
       stateRef.current = "closed";
       setExpanded(false);
-      setLayerActive(false);
       return;
     }
+    const layer = layerRef.current;
     const anchor = anchorRef.current;
     const pillStage = pillStageRef.current;
     const trigger = triggerRef.current;
@@ -421,12 +438,13 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
     const glassHost = glassHostRef.current;
     const cont = contRef.current;
     const scrim = scrimRef.current;
-    if (!anchor || !pillStage || !trigger || !card || !glassHost || !cont || !scrim) return;
+    if (!layer || !anchor || !pillStage || !trigger || !card || !glassHost || !cont || !scrim) return;
 
-    let anchorOrigin = { left: 0, top: 0 };
+    let measured = false;
+    let settledTop = 0;
 
-    const setOpen = (isOpen: boolean) => {
-      React.startTransition(() => setExpanded(isOpen));
+    const setOpenDom = (isOpen: boolean) => {
+      trigger.setAttribute("aria-expanded", String(isOpen));
       card.style.pointerEvents = isOpen ? "auto" : "none";
       // Keep scrim pointer-events: none so page scrolling is never blocked;
       // outside pointerdown closes the card smoothly instead.
@@ -434,9 +452,13 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
       card.inert = !isOpen;
     };
 
+    const setOpen = (isOpen: boolean) => {
+      setOpenDom(isOpen);
+      React.startTransition(() => setExpanded(isOpen));
+    };
+
     const measure = () => {
       const rect = anchor.getBoundingClientRect();
-      anchorOrigin = { left: rect.left, top: rect.top };
       const triggerW = pillStage.offsetWidth || 218;
       const triggerH = pillStage.offsetHeight || 25;
       const width = Math.min(344, window.innerWidth - 32);
@@ -448,58 +470,103 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
       cont.style.height = `${height}px`;
       glassHost.style.width = `${width}px`;
       glassHost.style.height = `${height}px`;
+      settledTop = Math.max(0, (734 - F[3] - 45) * (height / 595) * 0.45);
+      card.style.left = `${((triggerW - width) / 2).toFixed(2)}px`;
+      card.style.top = `${settledTop.toFixed(2)}px`;
+      card.style.width = `${width}px`;
+      card.style.height = `${height}px`;
+      card.style.borderRadius = `${FINAL_CARD_RADIUS}px`;
+      card.style.transformOrigin = "50% 0%";
       sizeRef.current = { width, height, triggerW, triggerH };
+      measured = true;
       setCardDims((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
     };
 
-    const updateScrimCutout = (
-      radius: number,
-      active: boolean,
-      rect?: Pick<DOMRect, "left" | "top" | "right" | "bottom" | "width" | "height">,
-    ) => {
+    const updateScrimCutout = (radius: number, active: boolean) => {
       if (!active) {
         scrim.style.clipPath = "";
         return;
       }
-      scrim.style.clipPath = scrimCutoutClip(rect ?? card.getBoundingClientRect(), radius);
+      scrim.style.clipPath = scrimCutoutClip(card.getBoundingClientRect(), radius);
     };
 
+    // Jelly stretch physics on both the closed credit pill and the opened
+    // credit drawer card, coordinated with the CornerMenu morph lifecycle so
+    // neither animation ever fights the other.
+    const pillJelly = new JellyStretchEngine(trigger, pillStage, {
+      enabled: true,
+    });
+    const cardJelly = new JellyStretchEngine(card, card, {
+      enabled: false,
+      bounce: 0.55,
+      softness: 0.95,
+      dragReachX: 20,
+      dragReachY: 16,
+      dragStretch: 0.0045,
+      dragBreak: 90,
+      ignoreInteractiveChildren: true,
+      onFrame: () => {
+        if (stateRef.current === "open") {
+          updateScrimCutout(FINAL_CARD_RADIUS, true);
+        }
+      },
+    });
+
     const clearSettledInlineLocks = (isOpen: boolean) => {
+      card.style.willChange = "";
+      card.style.contain = "";
+      scrim.style.willChange = "";
       if (isOpen) {
         // Keep card visible with no inline opacity/transform and overflow:visible
         // so Chromium renders the Apple Tahoe SVG refraction and 2px outer rim.
+        layer.style.zIndex = "42";
+        scrim.style.display = "block";
+        scrim.style.opacity = "0.38";
         card.style.visibility = "visible";
+        card.style.transform = "";
         card.style.opacity = "";
         card.style.overflow = "visible";
-        card.style.borderRadius = `${FINAL_CARD_RADIUS}px`;
-        glassHost.style.transform = "";
-        cont.style.filter = "";
-        cont.style.transform = "";
         cont.style.opacity = "";
-        cont.style.contain = "";
         pillStage.style.visibility = "hidden";
         pillStage.style.opacity = "";
-        pillStage.style.filter = "";
         updateScrimCutout(FINAL_CARD_RADIUS, true);
+        pillJelly.updateOptions({ enabled: false });
+        cardJelly.updateOptions({
+          enabled: true,
+          bounce: 0.55,
+          softness: 0.95,
+          dragReachX: 20,
+          dragReachY: 16,
+          dragStretch: 0.0045,
+          dragBreak: 90,
+          ignoreInteractiveChildren: true,
+          onFrame: () => {
+            if (stateRef.current === "open") {
+              updateScrimCutout(FINAL_CARD_RADIUS, true);
+            }
+          },
+        });
       } else {
+        cardJelly.updateOptions({ enabled: false });
+        layer.style.zIndex = "10";
         card.style.visibility = "hidden";
+        card.style.transform = "";
         card.style.opacity = "";
         card.style.overflow = "hidden";
-        glassHost.style.transform = "";
         scrim.style.opacity = "0";
         scrim.style.clipPath = "";
-        // Restore pillStage with NO inline opacity/filter so its LiquidGlass
+        scrim.style.display = "none";
+        // Restore pillStage with NO inline opacity so its LiquidGlass
         // backdrop-filter refracts at full crispness in the closed state.
         pillStage.style.visibility = "";
         pillStage.style.opacity = "";
-        pillStage.style.filter = "";
         pillStage.style.pointerEvents = "auto";
+        pillJelly.updateOptions({ enabled: true });
+        miniWaterControlRef.current?.(false);
       }
     };
 
-    let lastContBlur = -1;
-    let lastPillBlur = -1;
-
+    /** GPU-composited frame mapper: only mutates transform & opacity (0 layout/blur/clip-path thrashing). */
     const applyM = (v: number[]) => {
       const L = v[1];
       const T = 734 - v[4];
@@ -513,49 +580,20 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
       const progH = Math.max(0, (B - T - 144) / 451);
       const w = Math.max(TW * 0.7, TW + (FW - TW) * progW);
       const h = Math.max(TH, TH + (FH - TH) * progH);
-      const a = Math.round(v[5] * 0.3);
-
-      const cardLeft = (TW - w) / 2;
       const cardTop = Math.max(0, (T - 45) * ky * 0.45);
+      const sx = Math.max(0.08, w / Math.max(1, FW));
+      const sy = Math.max(0.08, h / Math.max(1, FH));
+      const ty = cardTop - settledTop;
+
       card.style.visibility = co > 0.005 ? "visible" : "hidden";
       card.style.overflow = "hidden";
-      card.style.left = `${cardLeft.toFixed(2)}px`;
-      card.style.top = `${cardTop.toFixed(2)}px`;
-      card.style.width = `${w.toFixed(2)}px`;
-      card.style.height = `${h.toFixed(2)}px`;
-      card.style.borderRadius = `${a}px`;
+      card.style.transform = `translate3d(0,${ty.toFixed(2)}px,0) scale(${sx.toFixed(4)},${sy.toFixed(4)})`;
       card.style.opacity = co < 0.999 ? String(co) : "";
-      // Scale the already-baked LiquidGlass smoothly with the morphing card
-      // so the glass material stays alive continuously with zero flicker or rebuild.
-      glassHost.style.transform = `scale(${(w / Math.max(1, FW)).toFixed(4)}, ${(h / Math.max(1, FH)).toFixed(4)})`;
       scrim.style.opacity = String(0.38 * co);
-      updateScrimCutout(a, co > 0.05, {
-        left: anchorOrigin.left + cardLeft,
-        top: anchorOrigin.top + cardTop,
-        right: anchorOrigin.left + cardLeft + w,
-        bottom: anchorOrigin.top + cardTop + h,
-        width: w,
-        height: h,
-      });
-
-      cont.style.left = "0px";
-      cont.style.top = "0px";
-      cont.style.contain = "layout style paint";
-      cont.style.transform = `translate3d(${(w / 2 - FW / 2).toFixed(2)}px, ${(h / 2 - FH / 2).toFixed(2)}px, 0) scale(${s.toFixed(4)})`;
-      const contBlur = v[8] > 0.05 ? Math.round(v[8] * 2) / 4 : 0;
-      if (contBlur !== lastContBlur) {
-        lastContBlur = contBlur;
-        cont.style.filter = contBlur > 0 ? `blur(${contBlur}px)` : "none";
-      }
       cont.style.opacity = String(Math.max(0, Math.min(1, (s - 0.3) * 2)));
 
       pillStage.style.visibility = v[13] <= 0.01 ? "hidden" : "visible";
       pillStage.style.opacity = String(v[13]);
-      const pillBlur = v[14] > 0.05 ? Math.round(v[14] * 2) / 4 : 0;
-      if (pillBlur !== lastPillBlur) {
-        lastPillBlur = pillBlur;
-        pillStage.style.filter = pillBlur > 0 ? `blur(${pillBlur}px)` : "";
-      }
       pillStage.style.pointerEvents = co > 0.1 ? "none" : "auto";
     };
 
@@ -569,9 +607,9 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
         applyM(k[k.length - 1]);
         const isOpen = anim.kind === "open";
         stateRef.current = isOpen ? "open" : "closed";
-        setOpen(isOpen);
         clearSettledInlineLocks(isOpen);
-        if (!isOpen) setLayerActive(false);
+        setOpen(isOpen);
+        if (isOpen) void loadTokens();
         animRef.current = null;
         if (isOpen && closeQueuedRef.current) {
           closeQueuedRef.current = false;
@@ -589,25 +627,37 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
     };
 
     const start = (kind: "open" | "close") => {
+      pillJelly.updateOptions({ enabled: false });
+      cardJelly.updateOptions({ enabled: false });
+      // Pause mini-pill WebGL shader during the morph so 0 WebGL shaders compete with GPU compositing.
+      miniWaterControlRef.current?.(true);
       if (kind === "open") {
-        setLayerActive(true);
-        measure();
-        void loadTokens();
+        layer.style.zIndex = "42";
+        scrim.style.display = "block";
+        scrim.style.clipPath = "";
+        if (!measured) measure();
+      } else {
+        scrim.style.clipPath = "";
       }
       if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
         const k = kind === "open" ? OPEN : CLOSE;
         applyM(k[k.length - 1]);
         const isOpen = kind === "open";
         stateRef.current = isOpen ? "open" : "closed";
-        setOpen(isOpen);
         clearSettledInlineLocks(isOpen);
-        if (!isOpen) setLayerActive(false);
+        setOpen(isOpen);
+        if (isOpen) void loadTokens();
         return;
       }
+      card.style.willChange = "transform, opacity";
+      card.style.contain = "layout style paint";
+      scrim.style.willChange = "opacity";
       animRef.current = { kind, t0: performance.now() };
       stateRef.current = kind === "open" ? "opening" : "closing";
-      if (kind === "open") setOpen(true);
-      else {
+      if (kind === "open") {
+        // Flip DOM interactivity immediately; defer React state + network fetch until settled.
+        setOpenDom(true);
+      } else {
         card.style.pointerEvents = "none";
         scrim.style.pointerEvents = "none";
       }
@@ -663,16 +713,17 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
     const onResize = () => {
       if (stateRef.current === "open") {
         measure();
-        applyM(OPEN[OPEN.length - 1]);
         clearSettledInlineLocks(true);
+      } else {
+        measured = false;
       }
     };
 
-    const onOutsidePointerDown = (event: PointerEvent) => {
-      if (stateRef.current !== "open") return;
-      if (anchor.contains(event.target as Node)) return;
-      hide();
-    };
+    const detachOutside = attachOutsideDismiss({
+      isActive: () => stateRef.current === "open" || stateRef.current === "opening",
+      isInside: (target, path) => anchor.contains(target) || Boolean(path && path.includes(anchor)),
+      onDismiss: hide,
+    });
 
     measure();
     applyM(OPEN[0]);
@@ -680,9 +731,11 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
     setOpen(false);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("resize", onResize);
-    document.addEventListener("pointerdown", onOutsidePointerDown);
 
     return () => {
+      detachOutside();
+      pillJelly.destroy();
+      cardJelly.destroy();
       cancelAnimationFrame(morphRafRef.current);
       morphRafRef.current = 0;
       animRef.current = null;
@@ -692,16 +745,15 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
       apiRef.current = { toggle: () => undefined, close: () => undefined };
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("resize", onResize);
-      document.removeEventListener("pointerdown", onOutsidePointerDown);
     };
   }, [isGaugeMounted, loadTokens]);
 
   // Close the credit card cleanly whenever a modal opens or the user switches view.
   React.useEffect(() => {
-    if (wizardOpen || settingsOpen || authOpen || paletteOpen || searchOpen) {
+    if (wizardOpen || settingsOpen || authOpen || paletteOpen || searchOpen || navSearchOpen) {
       apiRef.current.close();
     }
-  }, [wizardOpen, settingsOpen, authOpen, paletteOpen, searchOpen]);
+  }, [wizardOpen, settingsOpen, authOpen, paletteOpen, searchOpen, navSearchOpen]);
 
   React.useEffect(() => {
     apiRef.current.close();
@@ -723,7 +775,7 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
   if (!signedIn || !profile) {
     return (
       <div className="pointer-events-none absolute inset-x-0 top-[calc(100%+7px)] z-10 flex justify-center">
-        <div className="cj-pill-stage pointer-events-auto">
+        <div ref={guestStageRef} className="cj-pill-stage pointer-events-auto">
           <LiquidGlass
             className="absolute inset-0 z-0 pointer-events-none"
             style={{ borderRadius: 9999 }}
@@ -743,6 +795,7 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
             fluid={false}
           />
           <button
+            ref={guestTriggerRef}
             type="button"
             onClick={() => setAuthGateOpen(true)}
             className={cn(
@@ -772,10 +825,8 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
     <>
       <div ref={scrimRef} className="cj-scrim" aria-hidden="true" />
       <div
-        className={cn(
-          "pointer-events-none absolute inset-x-0 top-[calc(100%+7px)] flex justify-center",
-          layerActive ? "z-[42]" : "z-10",
-        )}
+        ref={layerRef}
+        className="pointer-events-none absolute inset-x-0 top-[calc(100%+7px)] z-10 flex justify-center"
       >
         <div ref={anchorRef} className="cj-anchor pointer-events-auto">
           {/* Closed pill using the exact same stage + LiquidGlass sibling pattern as PromptComposer */}
@@ -834,6 +885,8 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
                       surfaceDistortion={0.05}
                       waterDistortion={0.03}
                       speed={isDraining ? 2.2 : 1.0}
+                      active={!expanded}
+                      controlRef={miniWaterControlRef}
                     />
                     <span className="cj-bubble-gloss" aria-hidden="true" />
                   </span>
@@ -909,8 +962,8 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
                   </div>
                   <div className="mt-1 flex items-baseline gap-2">
                     <span dir="ltr" className="text-[22px] font-bold tracking-tight tabular-nums leading-none">
-                      {isDraining ? clampedCredits.toFixed(2) : baseCredits}
-                      <span className="text-[13px] font-medium opacity-55"> / {maxCredits}</span>
+                      {isDraining ? clampedCredits.toFixed(2) : Number(baseCredits.toFixed(2))}
+                      <span className="text-[13px] font-medium opacity-55"> / {Number(maxCredits.toFixed(2))}</span>
                     </span>
                     <span
                       dir="ltr"
@@ -969,16 +1022,18 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
                       data-draining={isDraining ? "true" : "false"}
                       style={bubbleStyle}
                     >
-                      <WaterRippleFill
-                        colorA={palette.colorA}
-                        colorB={palette.colorB}
-                        colorDeep={palette.colorDeep}
-                        scale={4.4}
-                        illumination={isDraining ? 0.38 : 0.28}
-                        surfaceDistortion={0.05}
-                        waterDistortion={0.03}
-                        speed={isDraining ? 2.2 : 1.0}
-                      />
+                      {expanded ? (
+                        <WaterRippleFill
+                          colorA={palette.colorA}
+                          colorB={palette.colorB}
+                          colorDeep={palette.colorDeep}
+                          scale={4.4}
+                          illumination={isDraining ? 0.38 : 0.28}
+                          surfaceDistortion={0.05}
+                          waterDistortion={0.03}
+                          speed={isDraining ? 2.2 : 1.0}
+                        />
+                      ) : null}
                       <span className="cj-bubble-gloss" aria-hidden="true" />
                     </span>
                   ) : null}
@@ -1008,7 +1063,7 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
                     {t("auth.creditsUsed")}
                   </div>
                   <div dir="ltr" className="mt-0.5 text-[13px] font-semibold tabular-nums">
-                    {isDraining ? usedCredits.toFixed(2) : Math.max(0, maxCredits - baseCredits)} / {maxCredits}
+                    {isDraining ? usedCredits.toFixed(2) : Number(Math.max(0, maxCredits - baseCredits).toFixed(2))} / {Number(maxCredits.toFixed(2))}
                   </div>
                   {isDraining && streamedChars > 0 ? (
                     <div dir="ltr" className="text-[10px] text-amber-500 tabular-nums">
@@ -1035,26 +1090,10 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
                 </div>
               </div>
 
-              {/* Hint + dev refill helper */}
+              {/* Hint */}
               <p className="mt-3 text-[11px] leading-relaxed opacity-70">
                 {baseCredits > 0 ? t("auth.creditsHint") : t("auth.creditsEmpty")}
               </p>
-
-              {import.meta.env.DEV && devMockSession && baseCredits < DEFAULT_SIGNUP_CREDITS ? (
-                <button
-                  type="button"
-                  onClick={() => resetDevCredits()}
-                  className={cn(
-                    "mt-2.5 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-[11px] font-medium transition-colors",
-                    tone === "dark"
-                      ? "border-amber-400/30 bg-amber-500/15 text-amber-200 hover:bg-amber-500/22"
-                      : "border-amber-500/30 bg-amber-500/12 text-amber-900 hover:bg-amber-500/20",
-                  )}
-                >
-                  <RotateCcw className="size-3" />
-                  {t("auth.creditsResetDemo")}
-                </button>
-              ) : null}
 
               <div
                 className={cn(
@@ -1072,6 +1111,7 @@ export function CreditJellyGauge({ hidden = false }: { hidden?: boolean }) {
                 </div>
 
                 <button
+                  ref={manageBtnJellyRef}
                   type="button"
                   onClick={() => {
                     apiRef.current.close();
