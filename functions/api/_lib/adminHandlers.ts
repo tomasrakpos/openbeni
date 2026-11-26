@@ -1165,6 +1165,27 @@ export async function handleAdmin(request: Request, env: AdminEnv = {}): Promise
       return await diagnostics(request, env, gate.authMode);
     }
 
+    // Every route below reads or writes Postgres through the service-role REST
+    // client. Without SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY that client
+    // cannot even form a URL, which used to surface as an opaque 500. Return an
+    // actionable 503 instead so the panel can explain the local setup problem.
+    const databaseRoute =
+      first === "providers" ||
+      first === "models" ||
+      first === "routers" ||
+      first === "users" ||
+      first === "usage" ||
+      first === "settings";
+    if (databaseRoute && !supabaseConfigured(env)) {
+      return jsonError(
+        request,
+        env,
+        503,
+        "The server is not connected to Supabase. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, then restart the server.",
+        "supabase_not_configured",
+      );
+    }
+
     if (first === "providers") {
       if (!id) {
         if (method === "GET") return await listProviders(request, env);

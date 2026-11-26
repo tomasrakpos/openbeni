@@ -549,7 +549,17 @@ function ProvidersTab() {
   };
 
   const createProvider = async () => {
-    if (!form.name.trim() || !form.baseUrl.trim()) return;
+    const name = form.name.trim();
+    const baseUrl = form.baseUrl.trim();
+    // Do not return silently: the old behaviour looked like a dead button.
+    if (!name) {
+      toast.error(t("admin.nameRequired"));
+      return;
+    }
+    if (!baseUrl) {
+      toast.error(t("admin.baseUrlRequired"));
+      return;
+    }
     const keys = form.keys
       .split("\n")
       .map((entry) => entry.trim())
@@ -559,8 +569,8 @@ function ProvidersTab() {
       const created = await apiFetch<{ provider: AdminProvider }>("/api/admin/providers", {
         method: "POST",
         body: {
-          name: form.name.trim(),
-          baseUrl: form.baseUrl.trim(),
+          name,
+          baseUrl,
           apiFormat: form.apiFormat,
           authHeader: form.authHeader,
           authPrefix: form.authPrefix,

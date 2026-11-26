@@ -235,6 +235,15 @@ describe("provider creation", () => {
     expect(row.auth_prefix).toBe("");
   });
 
+  it("explains a missing Supabase configuration instead of returning a generic 500", async () => {
+    const { SUPABASE_URL: _url, SUPABASE_SERVICE_ROLE_KEY: _serviceRole, ...envWithoutSupabase } = ENV;
+    const response = await handleAdmin(await createRequest(geminiBody), envWithoutSupabase);
+
+    expect(response.status).toBe(503);
+    const payload = (await response.json()) as { error: { code?: string } };
+    expect(payload.error.code).toBe("supabase_not_configured");
+  });
+
   it("refuses to create a provider with keys when encryption is not configured", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
